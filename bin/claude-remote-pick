@@ -37,7 +37,7 @@ while true; do
       printf "Verzeichnis (leer = \$HOME): "
       read -r dir
       dir="${dir:-$HOME}"
-      ( cd "$dir" && cr_launch "$(cr_session_name "")" 1 -- )
+      (cd "$dir" && cr_launch "$(cr_session_name "")" 1 --)
       ;;
     *)
       if [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le "${#menu[@]}" ]; then

@@ -8,8 +8,8 @@ ln -sf "${HERE}/bin/claude-remote-pick" "${BIN_DIR}/claude-remote-pick"
 
 # tmux: let the active client drive the size when multiple clients attach.
 TMUX_CONF="${HOME}/.tmux.conf"
-grep -q 'aggressive-resize' "$TMUX_CONF" 2>/dev/null \
-  || echo 'setw -g aggressive-resize on' >>"$TMUX_CONF"
+grep -q 'aggressive-resize' "$TMUX_CONF" 2>/dev/null ||
+  echo 'setw -g aggressive-resize on' >>"$TMUX_CONF"
 
 cat <<EOF
 Installed claude-remote and claude-remote-pick to ${BIN_DIR}.

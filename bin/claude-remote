@@ -15,15 +15,26 @@ label=""
 attach=1
 while [ $# -gt 0 ]; do
   case "$1" in
-    -l|--label)
+    -l | --label)
       if [ $# -lt 2 ]; then
         echo "claude-remote: -l/--label requires an argument" >&2
         exit 1
       fi
-      label="$2"; shift 2 ;;
-    --no-attach) attach=0; shift ;;
-    -h|--help) usage; exit 0 ;;
-    --) shift; break ;;
+      label="$2"
+      shift 2
+      ;;
+    --no-attach)
+      attach=0
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
     *) break ;;
   esac
 done
