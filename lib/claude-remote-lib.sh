@@ -50,3 +50,20 @@ cr_launch() {
   fi
   printf '%s\n' "$final"
 }
+
+# cr_abtop_sessions -> TSV rows for claude sessions:
+#   pid \t project_name \t status \t context_percent \t model \t current_task
+# Returns non-zero if abtop is missing or its output is not valid JSON.
+cr_abtop_sessions() {
+  local json
+  # shellcheck disable=SC2086
+  json="$($CR_ABTOP --json 2>/dev/null)" || return 1
+  printf '%s' "$json" | jq -e . >/dev/null 2>&1 || return 1
+  printf '%s' "$json" | jq -r '
+    .sessions[]
+    | select(.agent_cli == "claude")
+    | [ (.pid|tostring), (.project_name // ""), (.status // ""),
+        ((.context_percent // 0)|floor|tostring), (.model // ""),
+        (.current_task // "") ]
+    | @tsv'
+}
