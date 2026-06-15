@@ -76,6 +76,24 @@ cr_pane_map() {
   $CR_TMUX list-panes -a -F '#{pane_pid}'$'\t''#{session_name}' 2>/dev/null || true
 }
 
+# cr_format_rows: stdin = cr_join output; stdout = one display line per S row,
+# TAB-separated as: <session>\t<human-text>. The session (col 1) is the attach key.
+cr_format_rows() {
+  awk -F'\t' '
+    $1 == "S" {
+      # $2 session, $3 pid, $4 project, $5 status, $6 ctx, $7 model, $8 task
+      task = $8; if (length(task) > 40) task = substr(task, 1, 39) "…"
+      printf "%s\t%-18s %-9s %3s%% %-18s %s\n", $2, $4, $5, $6, $7, task
+    }'
+}
+
+# cr_footnote: stdin = cr_join output; prints the non-attachable hint if N>0.
+cr_footnote() {
+  awk -F'\t' '$1 == "N" && ($2+0) > 0 {
+    print "(" $2 " weitere Claude-Session(s) laufen ohne claude-remote — nicht attachbar)"
+  }'
+}
+
 # cr_join <panemap_file>
 # stdin: abtop TSV rows (pid \t project \t status \t ctx \t model \t task)
 # stdout: 'S\t<session>\t<row>' for attachable claude sessions,
