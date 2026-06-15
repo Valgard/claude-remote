@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/claude-remote-lib.sh disable=SC1091
+. "${HERE}/../lib/claude-remote-lib.sh"
+
+# --list: print menu lines (session<TAB>display) + footnote, then exit.
+if [ "${1:-}" = "--list" ]; then
+  cr_menu_lines
+  exit 0
+fi
+
+# Interactive loop: render menu, read a choice, attach (no exec → return here on detach).
+while true; do
+  tmpd="$(mktemp -d)"
+  cr_menu_lines >"${tmpd}/menu" 2>"${tmpd}/foot" || true
+  menu=()
+  while IFS= read -r line; do menu+=("$line"); done <"${tmpd}/menu"
+
+  echo "Claude-Sessions:"
+  i=1
+  for line in "${menu[@]:-}"; do
+    [ -z "$line" ] && continue
+    printf "  %2d) %s\n" "$i" "${line#*$'\t'}"
+    i=$((i + 1))
+  done
+  [ -s "${tmpd}/foot" ] && cat "${tmpd}/foot"
+  rm -rf "${tmpd}"
+  printf "  %2d) ＋ neue Session\n" "$i"
+  printf "   q) Beenden\n"
+  printf "Auswahl: "
+  read -r choice || exit 0
+
+  case "$choice" in
+    q | Q) exit 0 ;;
+    "$i")
+      printf "Verzeichnis (leer = \$HOME): "
+      read -r dir
+      dir="${dir:-$HOME}"
+      ( cd "$dir" && cr_launch "$(cr_session_name "")" 1 -- )
+      ;;
+    *)
+      if [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le "${#menu[@]}" ]; then
+        sess="${menu[$((choice - 1))]%%$'\t'*}"
+        # shellcheck disable=SC2086
+        $CR_TMUX attach -t "$sess"
+      fi
+      ;;
+  esac
+done

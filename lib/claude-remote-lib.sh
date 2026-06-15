@@ -94,6 +94,25 @@ cr_footnote() {
   }'
 }
 
+# cr_menu_lines -> "session<TAB>display" lines (stdout) for attachable sessions,
+# plus a footnote on stderr. Falls back to a raw tmux session list if abtop is
+# unavailable. Prints nothing (status 0) when abtop works but no claude sessions run.
+cr_menu_lines() {
+  local abtop_rows joined
+  if abtop_rows="$(cr_abtop_sessions)"; then
+    [ -z "$abtop_rows" ] && return 0
+    joined="$(printf '%s\n' "$abtop_rows" | cr_join <(cr_pane_map))"
+    printf '%s\n' "$joined" | cr_format_rows
+    printf '%s\n' "$joined" | cr_footnote >&2
+  else
+    # Fallback: plain tmux session list (reduced metadata). Two identical columns
+    # keep the "session<TAB>display" contract the loop expects.
+    # shellcheck disable=SC2086
+    $CR_TMUX list-sessions -F '#{session_name}'$'\t''#{session_name}' 2>/dev/null
+    echo "(abtop nicht verfügbar — reduzierte Anzeige)" >&2
+  fi
+}
+
 # cr_join <panemap_file>
 # stdin: abtop TSV rows (pid \t project \t status \t ctx \t model \t task)
 # stdout: 'S\t<session>\t<row>' for attachable claude sessions,
