@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Test stub standing in for the real claude binary.
+# Stays alive so the tmux pane it runs in does not exit immediately.
+# Echoes its args to a file so tests can assert passthrough.
+if [ -n "${FAKE_CLAUDE_ARGV_FILE:-}" ]; then
+  printf '%s\n' "$*" > "$FAKE_CLAUDE_ARGV_FILE"
+fi
+exec sleep 600

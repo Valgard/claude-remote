@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Stub standing in for `abtop`. Prints the fixture named by ABTOP_FIXTURE.
+# With no/invalid fixture and abtop-style args, exits non-zero to exercise fallback.
+case "$1" in
+  --json)
+    if [ -n "${ABTOP_FIXTURE:-}" ] && [ -f "${ABTOP_FIXTURE}" ]; then
+      cat "${ABTOP_FIXTURE}"
+    else
+      exit 1
+    fi
+    ;;
+  *) exit 1 ;;
+esac

@@ -1,0 +1,2 @@
+# Allow sourcing files shellcheck can't follow at lint time.
+external-sources=true
