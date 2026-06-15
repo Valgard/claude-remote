@@ -34,3 +34,23 @@ JSON
   [[ "$output" == *"standalone"* ]]
   [[ "$output" == *"(abtop nicht verfügbar"* ]]
 }
+
+@test "--list lists the live session and counts the bogus one in the footnote" {
+  pid="$(cr_make_session live)"
+  fixture="$(mktemp)"
+  cat > "$fixture" <<JSON
+{ "sessions": [
+  { "agent_cli":"claude","pid":${pid},"project_name":"liveproj","status":"Idle","model":"opus","context_percent":5,"current_task":"alive" },
+  { "agent_cli":"claude","pid":999999,"project_name":"ghostproj","status":"Idle","model":"opus","context_percent":3,"current_task":"gone" }
+] }
+JSON
+  export ABTOP_FIXTURE="$fixture"
+  run claude-remote-pick --list
+  [ "$status" -eq 0 ]
+  # the live session is selectable
+  [[ "$output" == *"liveproj"* ]]
+  # the bogus (non-attachable) session is NOT shown as a selectable row
+  [[ "$output" != *"ghostproj"* ]]
+  # exactly one non-attachable session reported in the footnote
+  [[ "$output" == *"1 weitere"* ]]
+}

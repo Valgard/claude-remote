@@ -37,6 +37,8 @@ while true; do
       printf "Verzeichnis (leer = \$HOME): "
       read -r dir
       dir="${dir:-$HOME}"
+      # Subshell: cr_launch execs `tmux attach`; running it in ( ) means the exec
+      # replaces only the subshell, so the picker loop survives a detach here too.
       (cd "$dir" && cr_launch "$(cr_session_name "")" 1 --)
       ;;
     *)
