@@ -75,3 +75,24 @@ cr_pane_map() {
   # shellcheck disable=SC2086
   $CR_TMUX list-panes -a -F '#{pane_pid}'$'\t''#{session_name}' 2>/dev/null || true
 }
+
+# cr_join <panemap_file>
+# stdin: abtop TSV rows (pid \t project \t status \t ctx \t model \t task)
+# stdout: 'S\t<session>\t<row>' for attachable claude sessions,
+#         then 'N\t<count>' for claude sessions with no matching tmux pane.
+cr_join() {
+  local panemap="$1"
+  awk -F'\t' -v panefile="$panemap" '
+    BEGIN {
+      while ((getline line < panefile) > 0) {
+        n = split(line, a, "\t"); if (n >= 2) sess[a[1]] = a[2]
+      }
+    }
+    {
+      pid = $1
+      if (pid in sess) { print "S\t" sess[pid] "\t" $0 }
+      else { miss++ }
+    }
+    END { print "N\t" miss + 0 }
+  '
+}
