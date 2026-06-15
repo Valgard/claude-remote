@@ -1,0 +1,5 @@
+# Git worktrees for isolated feature work
+.worktrees/
+
+# macOS
+.DS_Store
