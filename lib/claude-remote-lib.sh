@@ -67,3 +67,11 @@ cr_abtop_sessions() {
         (.current_task // "") ]
     | @tsv'
 }
+
+# cr_pane_map -> "pane_pid<TAB>session_name" for every pane across all sessions.
+# pane_pid is the process tmux exec'd in the pane == the claude pid (we launch
+# claude directly). Empty output (status 0) when no server/sessions exist.
+cr_pane_map() {
+  # shellcheck disable=SC2086
+  $CR_TMUX list-panes -a -F '#{pane_pid}'$'\t''#{session_name}' 2>/dev/null || true
+}
