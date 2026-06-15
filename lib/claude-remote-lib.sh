@@ -19,3 +19,34 @@ cr_session_name() {
   fi
   printf '%s\n' "$name" | tr ' ./:' '____'
 }
+
+# cr_launch <name> <attach:0|1> -- <claude args...>
+# Creates a detached tmux session running claude directly, so pane_pid == claude pid.
+# `claude` is resolved from PATH by tmux's exec form (no shell involved, so the
+# interactive claude zsh function never enters the picture — equivalent to
+# `command claude`). Renames the session to <name>-<pane_pid>, then optionally attaches.
+cr_launch() {
+  local name="$1" attach="$2"
+  shift 2
+  [ "${1-}" = "--" ] && shift
+  local tmp pid final
+  tmp="${name}-tmp-$$"
+  # shellcheck disable=SC2086
+  $CR_TMUX new-session -d -s "$tmp" -- claude "$@" || return 1
+  # shellcheck disable=SC2086
+  pid="$($CR_TMUX display-message -p -t "$tmp" '#{pane_pid}')" || return 1
+  if [ -z "$pid" ]; then
+    # shellcheck disable=SC2086
+    $CR_TMUX kill-session -t "$tmp" 2>/dev/null
+    echo "claude-remote: could not determine claude pid (session exited early?)" >&2
+    return 1
+  fi
+  final="${name}-${pid}"
+  # shellcheck disable=SC2086
+  $CR_TMUX rename-session -t "$tmp" "$final" || return 1
+  if [ "$attach" -eq 1 ]; then
+    # shellcheck disable=SC2086
+    exec $CR_TMUX attach -t "$final"
+  fi
+  printf '%s\n' "$final"
+}

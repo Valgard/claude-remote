@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/claude-remote-lib.sh disable=SC1091
+. "${HERE}/../lib/claude-remote-lib.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: claude-remote [-l|--label LABEL] [--no-attach] [-- CLAUDE_ARGS...]
+Launches claude inside a named, persistent tmux session and attaches.
+EOF
+}
+
+label=""
+attach=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -l|--label)
+      if [ $# -lt 2 ]; then
+        echo "claude-remote: -l/--label requires an argument" >&2
+        exit 1
+      fi
+      label="$2"; shift 2 ;;
+    --no-attach) attach=0; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+name="$(cr_session_name "$label")"
+cr_launch "$name" "$attach" -- "$@"
