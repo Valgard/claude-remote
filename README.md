@@ -145,14 +145,20 @@ Lists running Claude sessions and lets you attach to one.
 - `--list` — prints the menu non-interactively (one `session<TAB>display` line per session) and exits. Useful for scripting or debugging. The non-attachable footnote, if any, is written to stderr (not stdout).
 - Without flags — interactive picker. If `fzf` is installed and the picker runs on a terminal, sessions are chosen via fuzzy search (Enter attaches, `ESC` quits); otherwise a numbered menu is shown (select a number to attach, `q` quits). Either way, a `＋ neue Session` entry starts a new session (prompts for a directory).
 
-The display columns when `abtop` is available:
+The display columns when `abtop` is available — a status glyph, the session name
+with its `#pid` (so a `-l` label shows through and same-project sessions stay
+distinct), the context-window %, the shortened model, and the current task:
 
 ```
-  project_name   status    ctx%   model              current_task
-  myproject      working    42%   claude-sonnet-...  Refactoring the auth module
+  ► claude-remote #40787    49% opus   refactor the picker
+  ◐ salesbuddy #56281       93% sonnet waiting for input
+  ○ core_keeper #9           5% —      idle here
 ```
 
-Falls back to a plain `tmux list-sessions` output if `abtop` is not installed or produces no output.
+Glyphs: `►` executing/thinking · `◐` waiting · `○` idle. On a terminal the glyph
+and context-% are colour-coded (green/yellow/red); `--list` output stays plain for
+scripting. Falls back to a plain `tmux list-sessions` output if `abtop` is not
+installed or produces no output.
 
 **Works locally and over SSH.** When invoked via the restricted `command=` key, SSH closes automatically when the user presses `q` (the picker exits → SSH session ends).
 

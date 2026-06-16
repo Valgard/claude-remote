@@ -14,7 +14,7 @@ JSON
   run claude-remote-pick --list
   [ "$status" -eq 0 ]
   [[ "$output" == *"proj"* ]]
-  [[ "$output" == *"Idle"* ]]
+  [[ "$output" == *"○"* ]] # Idle renders as a glyph, not the word
   [[ "$output" == *"hello"* ]]
 }
 
@@ -47,8 +47,8 @@ JSON
   export ABTOP_FIXTURE="$fixture"
   run claude-remote-pick --list
   [ "$status" -eq 0 ]
-  # the live session is selectable
-  [[ "$output" == *"liveproj"* ]]
+  # the live session is selectable (display uses the session name, not the project)
+  [[ "$output" == *"live #"* ]]
   # the bogus (non-attachable) session is NOT shown as a selectable row
   [[ "$output" != *"ghostproj"* ]]
   # exactly one non-attachable session reported in the footnote

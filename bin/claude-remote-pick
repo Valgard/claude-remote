@@ -22,6 +22,9 @@ fi
 
 # Interactive loop: render menu, read a choice, attach (no exec → return here on detach).
 # Uses fzf when available and stdout is a terminal; otherwise a numbered menu.
+# Interactive output goes to a terminal, so colourise (fzf gets --ansi; the numbered
+# menu prints to the terminal directly). --list stays plain (CR_COLOR unset).
+export CR_COLOR=1
 while true; do
   tmpd="$(mktemp -d)"
   cr_menu_lines >"${tmpd}/menu" 2>"${tmpd}/foot" || true

@@ -79,12 +79,46 @@ cr_pane_map() {
 
 # cr_format_rows: stdin = cr_join output; stdout = one display line per S row,
 # TAB-separated as: <session>\t<human-text>. The session (col 1) is the attach key.
+# Display: <glyph> <name #pid> <ctx%> <model> <task>, where name is the session
+# name with its -<pid> suffix stripped (so a -l label shows through). When CR_COLOR=1
+# the glyph and ctx% are ANSI-coloured and the pid is dimmed; otherwise plain.
+# Padding is computed on visible length so colours don't break column alignment.
 cr_format_rows() {
-  awk -F'\t' '
+  awk -F'\t' -v color="${CR_COLOR:-0}" '
+    function shortmodel(m) {
+      if (m ~ /opus/) return "opus"
+      if (m ~ /sonnet/) return "sonnet"
+      if (m ~ /haiku/) return "haiku"
+      if (m == "" || m == "-") return "—"
+      return m
+    }
+    function glyph(s) {
+      if (s == "Executing" || s == "Thinking") return "►"
+      if (s == "Waiting") return "◐"
+      if (s == "Idle") return "○"
+      return "·"
+    }
     $1 == "S" {
       # $2 session, $3 pid, $4 project, $5 status, $6 ctx, $7 model, $8 task
-      task = $8; if (length(task) > 40) task = substr(task, 1, 39) "…"
-      printf "%s\t%-18s %-9s %3s%% %-18s %s\n", $2, $4, $5, $6, $7, task
+      session = $2; pid = $3; status = $5; ctx = $6 + 0
+      model = shortmodel($7); task = $8
+      name = session; sub("-" pid "$", "", name)
+      if (length(task) > 40) task = substr(task, 1, 39) "…"
+      g = glyph(status)
+      if (color == "1") {
+        sc = ""
+        if (status == "Executing" || status == "Thinking") sc = "\033[32m"
+        else if (status == "Waiting") sc = "\033[33m"
+        cc = (ctx < 50) ? "\033[32m" : (ctx < 80 ? "\033[33m" : "\033[31m")
+        plain = name " #" pid
+        padn = 22 - length(plain); if (padn < 0) padn = 0
+        glyph_str = sc g "\033[0m"
+        label_str = name " \033[2m#" pid "\033[0m" sprintf("%*s", padn, "")
+        ctx_str = cc sprintf("%3d%%", ctx) "\033[0m"
+        printf "%s\t%s %s %s %-6s %s\n", session, glyph_str, label_str, ctx_str, model, task
+      } else {
+        printf "%s\t%s %-22s %3d%% %-6s %s\n", session, g, name " #" pid, ctx, model, task
+      }
     }'
 }
 
@@ -222,7 +256,7 @@ cr_pick_fzf() {
   [ "$#" -gt 0 ] && lines=("$@")
   lines+=("__NEW__"$'\t'"＋ neue Session")
   local chosen
-  chosen="$(printf '%s\n' "${lines[@]}" | fzf --delimiter=$'\t' --with-nth='2..' \
+  chosen="$(printf '%s\n' "${lines[@]}" | fzf --ansi --delimiter=$'\t' --with-nth='2..' \
     --prompt='Session> ' --header="$header" --reverse --no-multi)" || true
   if [ -z "$chosen" ]; then
     echo "__QUIT__"
