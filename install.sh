@@ -38,3 +38,13 @@ Installed claude-remote and claude-remote-pick to ${BIN_DIR}.
 
 3) In Blink, connect to:  macbook.local   (Bonjour/mDNS over your local network)
 EOF
+
+# Transport prerequisite: warn (do not enable) if sshd is off, otherwise the
+# iPad cannot connect. Enabling Remote Login needs sudo and is a deliberate act.
+if ! cr_sshd_running; then
+  cat <<'EOF'
+
+⚠️  Remote Login (sshd) is currently OFF — the iPad cannot connect yet.
+    Enable it once:  sudo systemsetup -setremotelogin on
+EOF
+fi

@@ -4,6 +4,7 @@
 
 : "${CR_TMUX:=tmux}"
 : "${CR_ABTOP:=abtop}"
+: "${CR_SSH_PORT:=22}"
 
 # (functions added by later tasks)
 
@@ -145,4 +146,11 @@ cr_ensure_line() {
     printf '\n' >>"$file"
   fi
   printf '%s\n' "$line" >>"$file"
+}
+
+# cr_sshd_running -> 0 if something is listening on localhost:${CR_SSH_PORT} (sshd),
+# else 1. Read-only, no sudo: opens a TCP connection via bash's /dev/tcp in a
+# subshell (the fd is closed when the subshell exits).
+cr_sshd_running() {
+  (exec 3<>"/dev/tcp/127.0.0.1/${CR_SSH_PORT}") 2>/dev/null
 }

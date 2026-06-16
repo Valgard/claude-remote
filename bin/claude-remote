@@ -47,5 +47,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Heads-up if the session won't be reachable remotely yet. Read-only, no sudo;
+# the session still launches. Self-extinguishes once Remote Login is enabled.
+if ! cr_sshd_running; then
+  echo "claude-remote: ⚠️  Remote Login (sshd) ist aus — diese Session ist nur lokal erreichbar." >&2
+  echo "             Aktivieren: sudo systemsetup -setremotelogin on" >&2
+fi
+
 name="$(cr_session_name "$label")"
 cr_launch "$name" "$attach" -- "$@"
