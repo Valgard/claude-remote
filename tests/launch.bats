@@ -47,3 +47,13 @@ teardown() { cr_teardown; }
   [ "$status" -eq 0 ]
   [[ "$output" =~ ^foo-[0-9]+$ ]]
 }
+
+@test "claude-remote resolves its lib when invoked via a symlink (install scenario)" {
+  cd /tmp
+  linkdir="$(mktemp -d)"
+  ln -s "${REPO_ROOT}/bin/claude-remote" "${linkdir}/claude-remote"
+  run "${linkdir}/claude-remote" --no-attach -l linktest
+  [ "$status" -eq 0 ]
+  run bash -c "${CR_TMUX} list-sessions -F '#{session_name}'"
+  [[ "$output" =~ ^linktest-[0-9]+$ ]]
+}

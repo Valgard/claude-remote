@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -uo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks so HERE points at the real script dir (install.sh symlinks
+# this into ~/.local/bin; the lib lives next to the real script, not the link).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [ "${SOURCE#/}" = "$SOURCE" ] && SOURCE="$HERE/$SOURCE"
+done
+HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # shellcheck source=../lib/claude-remote-lib.sh disable=SC1091
 . "${HERE}/../lib/claude-remote-lib.sh"
 
