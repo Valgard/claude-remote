@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/claude-remote-lib.sh disable=SC1091
+. "${HERE}/lib/claude-remote-lib.sh"
 BIN_DIR="${HOME}/.local/bin"
 mkdir -p "$BIN_DIR"
 ln -sf "${HERE}/bin/claude-remote" "${BIN_DIR}/claude-remote"
 ln -sf "${HERE}/bin/claude-remote-pick" "${BIN_DIR}/claude-remote-pick"
 
 # tmux: let the active client drive the size when multiple clients attach.
+# cr_ensure_line is newline-safe and idempotent (won't merge onto a no-newline
+# last line, won't duplicate on re-run).
 TMUX_CONF="${HOME}/.tmux.conf"
-grep -q 'aggressive-resize' "$TMUX_CONF" 2>/dev/null ||
-  echo 'setw -g aggressive-resize on' >>"$TMUX_CONF"
+cr_ensure_line "$TMUX_CONF" 'setw -g aggressive-resize on'
 
 cat <<EOF
 Installed claude-remote and claude-remote-pick to ${BIN_DIR}.

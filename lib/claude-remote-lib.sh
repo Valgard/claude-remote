@@ -133,3 +133,16 @@ cr_join() {
     END { print "N\t" miss + 0 }
   '
 }
+
+# cr_ensure_line <file> <line>
+# Append <line> to <file> only if not already present, guaranteeing it lands on
+# its own line: if the file exists, is non-empty, and lacks a trailing newline,
+# a newline is added first (otherwise the new line would merge onto the last one).
+cr_ensure_line() {
+  local file="$1" line="$2"
+  [ -f "$file" ] && grep -qF -- "$line" "$file" && return 0
+  if [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ]; then
+    printf '\n' >>"$file"
+  fi
+  printf '%s\n' "$line" >>"$file"
+}
