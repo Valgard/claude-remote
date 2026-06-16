@@ -11,6 +11,8 @@ done
 HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # shellcheck source=../lib/claude-remote-lib.sh disable=SC1091
 . "${HERE}/../lib/claude-remote-lib.sh"
+# An SSH forced command (or other stripped env) has a minimal PATH; make tools resolvable.
+cr_augment_path
 
 usage() {
   cat >&2 <<'EOF'

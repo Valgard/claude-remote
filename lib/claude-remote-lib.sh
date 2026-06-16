@@ -154,3 +154,19 @@ cr_ensure_line() {
 cr_sshd_running() {
   (exec 3<>"/dev/tcp/127.0.0.1/${CR_SSH_PORT}") 2>/dev/null
 }
+
+# cr_augment_path: append common tool locations to PATH so abtop/tmux/jq/fzf/claude
+# resolve even under a stripped environment (e.g. an SSH forced command, whose PATH
+# is typically just /usr/bin:/bin:/usr/sbin:/sbin). Appends (does not prepend) so an
+# already-present entry keeps priority; only adds dirs that exist and aren't on PATH.
+cr_augment_path() {
+  local d
+  for d in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin" "$HOME/local/bin"; do
+    [ -d "$d" ] || continue
+    case ":$PATH:" in
+      *":$d:"*) ;;
+      *) PATH="$PATH:$d" ;;
+    esac
+  done
+  export PATH
+}
