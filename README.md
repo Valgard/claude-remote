@@ -58,7 +58,7 @@ What it does:
 
 1. Creates `~/.local/bin/` if missing.
 2. Symlinks `bin/claude-remote` and `bin/claude-remote-pick` into `~/.local/bin/`.
-3. Appends `setw -g aggressive-resize on` to `~/.tmux.conf` if the option is not already present (this keeps the session size correct when attaching from a smaller screen).
+3. Appends `setw -g aggressive-resize on` and `set -g window-size latest` to `~/.tmux.conf` if not already present. Together these size the window to the most recently active client, so the Mac is not permanently shrunk to a smaller iPad screen while both are attached — it resizes back as soon as the Mac is active again.
 4. Prints setup instructions (see below).
 
 Make sure `~/.local/bin` is in your `PATH`.

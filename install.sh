@@ -8,11 +8,13 @@ mkdir -p "$BIN_DIR"
 ln -sf "${HERE}/bin/claude-remote" "${BIN_DIR}/claude-remote"
 ln -sf "${HERE}/bin/claude-remote-pick" "${BIN_DIR}/claude-remote-pick"
 
-# tmux: let the active client drive the size when multiple clients attach.
-# cr_ensure_line is newline-safe and idempotent (won't merge onto a no-newline
-# last line, won't duplicate on re-run).
+# tmux: size the window to the most recently active client, so the Mac is not
+# permanently shrunk to the iPad's smaller resolution while both are attached —
+# it resizes back as soon as the Mac is the active client again. aggressive-resize
+# helps older size modes. cr_ensure_line is newline-safe and idempotent.
 TMUX_CONF="${HOME}/.tmux.conf"
 cr_ensure_line "$TMUX_CONF" 'setw -g aggressive-resize on'
+cr_ensure_line "$TMUX_CONF" 'set -g window-size latest'
 
 cat <<EOF
 Installed claude-remote and claude-remote-pick to ${BIN_DIR}.
