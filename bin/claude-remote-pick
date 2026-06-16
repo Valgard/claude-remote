@@ -21,42 +21,43 @@ if [ "${1:-}" = "--list" ]; then
 fi
 
 # Interactive loop: render menu, read a choice, attach (no exec → return here on detach).
+# Uses fzf when available and stdout is a terminal; otherwise a numbered menu.
 while true; do
   tmpd="$(mktemp -d)"
   cr_menu_lines >"${tmpd}/menu" 2>"${tmpd}/foot" || true
   menu=()
-  while IFS= read -r line; do menu+=("$line"); done <"${tmpd}/menu"
-
-  echo "Claude-Sessions:"
-  i=1
-  for line in "${menu[@]:-}"; do
-    [ -z "$line" ] && continue
-    printf "  %2d) %s\n" "$i" "${line#*$'\t'}"
-    i=$((i + 1))
-  done
-  [ -s "${tmpd}/foot" ] && cat "${tmpd}/foot"
+  while IFS= read -r line; do [ -n "$line" ] && menu+=("$line"); done <"${tmpd}/menu"
+  footnote=""
+  [ -s "${tmpd}/foot" ] && footnote="$(cat "${tmpd}/foot")"
   rm -rf "${tmpd}"
-  printf "  %2d) ＋ neue Session\n" "$i"
-  printf "   q) Beenden\n"
-  printf "Auswahl: "
-  read -r choice || exit 0
 
-  case "$choice" in
-    q | Q) exit 0 ;;
-    "$i")
-      printf "Verzeichnis (leer = \$HOME): "
-      read -r dir
+  # Pass the menu lines as args, but never inject a spurious empty arg when the
+  # menu is empty (would break ${#menu[@]} under bash 3.2 + set -u in a forced cmd).
+  if [ "${#menu[@]}" -gt 0 ]; then
+    pick_args=("$footnote" "${menu[@]}")
+  else
+    pick_args=("$footnote")
+  fi
+  if command -v fzf >/dev/null 2>&1 && [ -t 1 ]; then
+    selection="$(cr_pick_fzf "${pick_args[@]}")"
+  else
+    selection="$(cr_pick_numbered "${pick_args[@]}")"
+  fi
+
+  case "$selection" in
+    __QUIT__ | "") exit 0 ;;
+    __NONE__) : ;; # invalid choice → redraw
+    __NEW__)
+      printf "Verzeichnis (leer = \$HOME): " >&2
+      read -r dir || dir=""
       dir="${dir:-$HOME}"
       # Subshell: cr_launch execs `tmux attach`; running it in ( ) means the exec
       # replaces only the subshell, so the picker loop survives a detach here too.
       (cd "$dir" && cr_launch "$(cr_session_name "")" 1 --)
       ;;
     *)
-      if [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le "${#menu[@]}" ]; then
-        sess="${menu[$((choice - 1))]%%$'\t'*}"
-        # shellcheck disable=SC2086
-        $CR_TMUX attach -t "$sess"
-      fi
+      # shellcheck disable=SC2086
+      $CR_TMUX attach -t "$selection"
       ;;
   esac
 done

@@ -17,7 +17,7 @@ The only code we own is two stateless shell scripts. Everything else is handled 
 | Session persistence & attach/detach | **tmux** | Keeps Claude alive; transports the terminal |
 | Remote transport & authentication | **sshd** | Carries the SSH connection; enforces key auth |
 | Session metadata (status, context, model) | **abtop** | Reads Claude's state file and exposes it as JSON |
-| Picker UI (optional) | **fzf** | Interactive fuzzy search (future; currently plain numbered menu) |
+| Picker UI (optional) | **fzf** | Fuzzy session selection when present; falls back to a numbered menu |
 | Own code | `bin/claude-remote`, `bin/claude-remote-pick` | Stateless glue scripts |
 
 No long-running daemon of our own. We start nothing that does not already exist.
@@ -34,7 +34,7 @@ No long-running daemon of our own. We start nothing that does not already exist.
 
 **Optional:**
 
-- [fzf](https://github.com/junegunn/fzf) (not yet wired in; planned for a future iteration)
+- [fzf](https://github.com/junegunn/fzf) — when installed and the picker runs on a terminal, it is used for fuzzy session selection; otherwise the picker falls back to a plain numbered menu
 
 **Development only:**
 
@@ -143,7 +143,7 @@ claude-remote-pick [--list]
 Lists running Claude sessions and lets you attach to one.
 
 - `--list` — prints the menu non-interactively (one `session<TAB>display` line per session) and exits. Useful for scripting or debugging. The non-attachable footnote, if any, is written to stderr (not stdout).
-- Without flags — interactive numbered menu. Select a session number to attach. `q` quits. Selecting the `＋ neue Session` entry starts a new session (prompts for a directory).
+- Without flags — interactive picker. If `fzf` is installed and the picker runs on a terminal, sessions are chosen via fuzzy search (Enter attaches, `ESC` quits); otherwise a numbered menu is shown (select a number to attach, `q` quits). Either way, a `＋ neue Session` entry starts a new session (prompts for a directory).
 
 The display columns when `abtop` is available:
 
