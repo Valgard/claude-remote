@@ -45,6 +45,11 @@ cr_launch() {
   final="${name}-${pid}"
   # shellcheck disable=SC2086
   $CR_TMUX rename-session -t "$tmp" "$final" || return 1
+  # Hide tmux's status line for our sessions — Claude's full-screen TUI uses the
+  # whole height; the row is pure overhead (toggle back with Prefix+S). Cosmetic,
+  # so don't fail the launch if it doesn't take.
+  # shellcheck disable=SC2086
+  $CR_TMUX set-option -t "$final" status off 2>/dev/null || true
   if [ "$attach" -eq 1 ]; then
     # shellcheck disable=SC2086
     exec $CR_TMUX attach -t "$final"

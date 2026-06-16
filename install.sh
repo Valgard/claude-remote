@@ -15,6 +15,9 @@ ln -sf "${HERE}/bin/claude-remote-pick" "${BIN_DIR}/claude-remote-pick"
 TMUX_CONF="${HOME}/.tmux.conf"
 cr_ensure_line "$TMUX_CONF" 'setw -g aggressive-resize on'
 cr_ensure_line "$TMUX_CONF" 'set -g window-size latest'
+# Prefix+S toggles the status line (claude-remote hides it per session for Claude's
+# full-screen TUI; this lets you bring it back to glance at the session name/clock).
+cr_ensure_line "$TMUX_CONF" 'bind-key S set-option status'
 
 cat <<EOF
 Installed claude-remote and claude-remote-pick to ${BIN_DIR}.

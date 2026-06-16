@@ -57,3 +57,12 @@ teardown() { cr_teardown; }
   run bash -c "${CR_TMUX} list-sessions -F '#{session_name}'"
   [[ "$output" =~ ^linktest-[0-9]+$ ]]
 }
+
+@test "claude-remote hides the tmux status line for its sessions" {
+  cd /tmp
+  run claude-remote --no-attach -l statustest
+  [ "$status" -eq 0 ]
+  sess="$(${CR_TMUX} list-sessions -F '#{session_name}')"
+  run bash -c "${CR_TMUX} show-options -t '$sess' status"
+  [[ "$output" == *"off"* ]]
+}
