@@ -54,6 +54,20 @@ while true; do
       printf "Verzeichnis (leer = \$HOME): " >&2
       read -r dir || dir=""
       dir="${dir:-$HOME}"
+      # `read -r` leaves input literal, so ~ and $HOME never expand. Do it by hand
+      # (no eval — that would execute arbitrary input typed at this prompt).
+      # SC2088: the tilde here is a literal match/strip target, not meant to expand.
+      # shellcheck disable=SC2088
+      case "$dir" in
+        "~") dir="$HOME" ;;
+        "~/"*) dir="$HOME/${dir#"~/"}" ;;
+      esac
+      dir="${dir//\$\{HOME\}/$HOME}"
+      dir="${dir//\$HOME/$HOME}"
+      if [ ! -d "$dir" ]; then
+        printf "Kein Verzeichnis: %s\n" "$dir" >&2
+        continue
+      fi
       # Subshell: cr_launch execs `tmux attach`; running it in ( ) means the exec
       # replaces only the subshell, so the picker loop survives a detach here too.
       (cd "$dir" && cr_launch "$(cr_session_name "")" 1 --)
