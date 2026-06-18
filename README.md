@@ -145,7 +145,7 @@ claude-remote-pick [--list]
 Lists running Claude sessions and lets you attach to one.
 
 - `--list` — prints the menu non-interactively (one `session<TAB>display` line per session) and exits. Useful for scripting or debugging. The non-attachable footnote, if any, is written to stderr (not stdout).
-- Without flags — interactive picker. If `fzf` is installed and the picker runs on a terminal, sessions are chosen via fuzzy search (Enter attaches, `ESC` quits); otherwise a numbered menu is shown (select a number to attach, `q` quits). Either way, a `＋ neue Session` entry starts a new session (prompts for a directory).
+- Without flags — interactive picker. If `fzf` is installed and the picker runs on a terminal, sessions are chosen via fuzzy search (Enter attaches, `Ctrl-R` refreshes the list, `ESC` quits); otherwise a numbered menu is shown (select a number to attach, `r` refreshes, `q` quits). Either way, a `＋ neue Session` entry starts a new session (prompts for a directory). Refreshing re-queries `abtop`/`tmux` so newly started or exited sessions show up without leaving the picker.
 
 The display columns when `abtop` is available — a status glyph, the session name
 with its `#pid` (so a `-l` label shows through and same-project sessions stay

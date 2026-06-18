@@ -212,8 +212,9 @@ cr_augment_path() {
 
 # cr_pick_numbered <footnote> <menu-line>...
 # Renders a numbered menu on STDERR, reads one choice from stdin, and echoes a
-# selection TOKEN on stdout: a tmux session name, __NEW__, __QUIT__, or __NONE__
-# (invalid input -> caller redraws). Menu lines are "session<TAB>display".
+# selection TOKEN on stdout: a tmux session name, __NEW__, __QUIT__, __RELOAD__
+# (re-fetch the session list), or __NONE__ (invalid input -> caller redraws).
+# Menu lines are "session<TAB>display".
 cr_pick_numbered() {
   local footnote="$1"
   shift
@@ -227,6 +228,7 @@ cr_pick_numbered() {
     done
     [ -n "$footnote" ] && printf '%s\n' "$footnote"
     printf "  %2d) ＋ neue Session\n" "$i"
+    printf "   r) Aktualisieren\n"
     printf "   q) Beenden\n"
     printf "Auswahl: "
   } >&2
@@ -237,6 +239,7 @@ cr_pick_numbered() {
   }
   case "$choice" in
     q | Q) echo "__QUIT__" ;;
+    r | R) echo "__RELOAD__" ;;
     "$newidx") echo "__NEW__" ;;
     *)
       if [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le "${#menu[@]}" ]; then
@@ -250,20 +253,25 @@ cr_pick_numbered() {
 
 # cr_pick_fzf <footnote> <menu-line>...
 # Presents the menu via fzf (interactive, uses /dev/tty), and echoes a selection
-# TOKEN on stdout: a tmux session name, __NEW__, or __QUIT__ (ESC/cancel).
-# fzf shows only the display column (field 2..); the session key is field 1.
+# TOKEN on stdout: a tmux session name, __NEW__, __RELOAD__ (Ctrl-R, re-fetch the
+# list), or __QUIT__ (ESC/cancel). fzf shows only the display column (field 2..);
+# the session key is field 1. With --expect=ctrl-r, fzf prints the pressed key on
+# line 1 (empty for a plain Enter) and the selected line on line 2.
 cr_pick_fzf() {
   local footnote="$1"
   shift
-  local header="claude-remote — Enter: attach · ESC: beenden"
+  local header="claude-remote — Enter: attach · Ctrl-R: aktualisieren · ESC: beenden"
   [ -n "$footnote" ] && header="${header}"$'\n'"${footnote}"
   local lines=()
   [ "$#" -gt 0 ] && lines=("$@")
   lines+=("__NEW__"$'\t'"＋ neue Session")
-  local chosen
-  chosen="$(printf '%s\n' "${lines[@]}" | fzf --ansi --delimiter=$'\t' --with-nth='2..' \
-    --prompt='Session> ' --header="$header" --reverse --no-multi)" || true
-  if [ -z "$chosen" ]; then
+  local out key chosen
+  out="$(printf '%s\n' "${lines[@]}" | fzf --ansi --delimiter=$'\t' --with-nth='2..' \
+    --prompt='Session> ' --header="$header" --reverse --no-multi --expect=ctrl-r)" || true
+  { IFS= read -r key; IFS= read -r chosen; } <<<"$out"
+  if [ "$key" = "ctrl-r" ]; then
+    echo "__RELOAD__"
+  elif [ -z "$chosen" ]; then
     echo "__QUIT__"
   else
     printf '%s\n' "${chosen%%$'\t'*}"

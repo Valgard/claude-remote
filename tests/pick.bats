@@ -34,13 +34,20 @@ LIB="${REPO_ROOT}/lib/claude-remote-lib.sh"
   [ "$output" = "__NEW__" ]
 }
 
+@test "cr_pick_numbered: r returns __RELOAD__ (refresh the list)" {
+  run bash -c "source '$LIB'; printf 'r\n' | cr_pick_numbered '' \$'sess-one\tproj one' 2>/dev/null"
+  [ "$output" = "__RELOAD__" ]
+}
+
 # --- fzf path (real fzf interaction is manual; here we stub fzf to test mapping) ---
 
 @test "cr_pick_fzf maps the fzf-selected line to its session key" {
   stub="$(mktemp -d)"
+  # With --expect, fzf prints the pressed key on line 1 (empty for plain Enter),
+  # then the selected line. Emit an empty key line, then the sess-two candidate.
   cat >"$stub/fzf" <<'STUB'
 #!/bin/bash
-# Ignore options, read candidates from stdin, emit the one for sess-two.
+printf '\n'
 grep -m1 'sess-two' || true
 STUB
   chmod +x "$stub/fzf"
@@ -57,4 +64,14 @@ STUB
   export PATH="$stub:$PATH"
   run bash -c "source '$LIB'; cr_pick_fzf '' \$'sess-one\tproj one' 2>/dev/null"
   [ "$output" = "__QUIT__" ]
+}
+
+@test "cr_pick_fzf returns __RELOAD__ when the reload key is pressed" {
+  stub="$(mktemp -d)"
+  # --expect reports the reload key on line 1 with no selection following.
+  printf '#!/bin/bash\nprintf '\''ctrl-r\\n'\''\n' >"$stub/fzf"
+  chmod +x "$stub/fzf"
+  export PATH="$stub:$PATH"
+  run bash -c "source '$LIB'; cr_pick_fzf '' \$'sess-one\tproj one' 2>/dev/null"
+  [ "$output" = "__RELOAD__" ]
 }

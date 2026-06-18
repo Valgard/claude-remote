@@ -49,7 +49,7 @@ while true; do
 
   case "$selection" in
     __QUIT__ | "") exit 0 ;;
-    __NONE__) : ;; # invalid choice → redraw
+    __NONE__ | __RELOAD__) : ;; # invalid choice or refresh → redraw (re-runs cr_menu_lines)
     __NEW__)
       printf "Verzeichnis (leer = \$HOME): " >&2
       read -r dir || dir=""
