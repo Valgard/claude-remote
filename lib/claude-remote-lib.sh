@@ -268,7 +268,10 @@ cr_pick_fzf() {
   local out key chosen
   out="$(printf '%s\n' "${lines[@]}" | fzf --ansi --delimiter=$'\t' --with-nth='2..' \
     --prompt='Session> ' --header="$header" --reverse --no-multi --expect=ctrl-r)" || true
-  { IFS= read -r key; IFS= read -r chosen; } <<<"$out"
+  {
+    IFS= read -r key
+    IFS= read -r chosen
+  } <<<"$out"
   if [ "$key" = "ctrl-r" ]; then
     echo "__RELOAD__"
   elif [ -z "$chosen" ]; then
