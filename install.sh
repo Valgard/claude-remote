@@ -19,6 +19,50 @@ cr_ensure_line "$TMUX_CONF" 'set -g window-size latest'
 # full-screen TUI; this lets you bring it back to glance at the session name/clock).
 cr_ensure_line "$TMUX_CONF" 'bind-key S set-option status'
 
+# Keychain anchor (macOS). A tmux server first born from the iPad's SSH forced
+# command lands in launchd's Background domain, where Claude Code's login-keychain
+# write (OAuth token refresh) fails with errSecInteractionNotAllowed (-25308). A
+# LaunchAgent loaded in the GUI (Aqua) session runs cr_ensure_anchor at login AND
+# every CR_ANCHOR_INTERVAL seconds: it births a hidden holding session only when no
+# tmux server is running, so the server is born keychain-capable and every later
+# picker session joins it. The periodic tick is self-healing (re-establishes an Aqua
+# server within one interval if it ever dies) and makes rollout seamless: with old
+# sessions still up it no-ops, then takes over automatically once they end — no reboot
+# needed. The plist is rewritten on every run (deterministic content = idempotent);
+# the bootout/bootstrap pair reloads it without erroring on re-run.
+if command -v launchctl >/dev/null 2>&1; then
+  AGENT_LABEL="de.valgard.claude-remote-anchor"
+  AGENT_DIR="${HOME}/Library/LaunchAgents"
+  AGENT_PLIST="${AGENT_DIR}/${AGENT_LABEL}.plist"
+  AGENT_INTERVAL="${CR_ANCHOR_INTERVAL:-60}" # seconds between self-heal checks
+  mkdir -p "$AGENT_DIR"
+  cat >"$AGENT_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${AGENT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BIN_DIR}/claude-remote-pick</string>
+    <string>--ensure-anchor</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>${AGENT_INTERVAL}</integer>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+</dict>
+</plist>
+EOF
+  # Reload idempotently. Both may fail harmlessly when run outside a GUI session
+  # (e.g. over SSH): the plist is on disk and loads at the next GUI login anyway.
+  launchctl bootout "gui/$(id -u)/${AGENT_LABEL}" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null || true
+fi
+
 cat <<EOF
 Installed claude-remote and claude-remote-pick to ${BIN_DIR}.
 

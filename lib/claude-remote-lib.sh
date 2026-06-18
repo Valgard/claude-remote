@@ -5,6 +5,7 @@
 : "${CR_TMUX:=tmux}"
 : "${CR_ABTOP:=abtop}"
 : "${CR_SSH_PORT:=22}"
+: "${CR_ANCHOR:=_cr_anchor}"
 
 # (functions added by later tasks)
 
@@ -55,6 +56,30 @@ cr_launch() {
     exec $CR_TMUX attach -t "$final"
   fi
   printf '%s\n' "$final"
+}
+
+# cr_ensure_anchor: if no tmux server is running yet, birth one via a detached
+# "holding" session named $CR_ANCHOR; otherwise do nothing.
+#
+# The point is the server's launchd bootstrap namespace, which is fixed at birth and
+# inherited by every pane. Run from the GUI (Aqua) session via the install.sh
+# LaunchAgent at login — when normally no server exists yet — the server it births is
+# keychain-capable, so a later iPad picker session born inside it can write the login
+# keychain (OAuth token refresh) instead of failing with errSecInteractionNotAllowed
+# (-25308), which is what happens when the picker's `tmux new-session` instead births
+# a fresh server inside the SSH forced command's Background launchd domain. The
+# detached holding session then keeps that Aqua server alive across session churn.
+#
+# It is a no-op whenever a server is ALREADY running — we can't change a running
+# server's namespace anyway, and must never disturb a server we didn't birth (e.g. the
+# user's existing sessions). This also makes the LaunchAgent safe to load at any time:
+# with sessions already up it does nothing, and takes effect at the next clean login.
+# The holding session is hidden from the picker (see cr_menu_lines).
+cr_ensure_anchor() {
+  # shellcheck disable=SC2086
+  $CR_TMUX list-sessions >/dev/null 2>&1 && return 0
+  # shellcheck disable=SC2086
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
 }
 
 # cr_abtop_sessions -> TSV rows for claude sessions:
@@ -146,9 +171,11 @@ cr_menu_lines() {
     printf '%s\n' "$joined" | cr_footnote >&2
   else
     # Fallback: plain tmux session list (reduced metadata). Two identical columns
-    # keep the "session<TAB>display" contract the loop expects.
+    # keep the "session<TAB>display" contract the loop expects. The $CR_ANCHOR
+    # holding session is internal plumbing (see cr_ensure_anchor) — filter it out.
     # shellcheck disable=SC2086
-    $CR_TMUX list-sessions -F '#{session_name}'$'\t''#{session_name}' 2>/dev/null
+    $CR_TMUX list-sessions -F '#{session_name}'$'\t''#{session_name}' 2>/dev/null |
+      awk -F'\t' -v anchor="$CR_ANCHOR" '$1 != anchor'
     echo "(abtop nicht verfügbar — reduzierte Anzeige)" >&2
   fi
 }

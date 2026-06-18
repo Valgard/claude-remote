@@ -28,7 +28,7 @@ bats -f "marks attachable" tests/ # run tests matching a name pattern
 
 - `lib/claude-remote-lib.sh` — every piece of real logic lives here as a `cr_*` function. Sourced by both bins **and** the tests, so logic is unit-testable without invoking the scripts end-to-end.
 - `bin/claude-remote` — launch wrapper: parses `-l/--label`, `--no-attach`, `--`, then calls `cr_session_name` + `cr_launch`. `set -euo pipefail`.
-- `bin/claude-remote-pick` — the picker: a redraw loop calling `cr_menu_lines` and one of the pick functions. Also the SSH forced-command entry point. `set -uo pipefail` (no `-e`: the attach/redraw loop must survive non-zero exits).
+- `bin/claude-remote-pick` — the picker: a redraw loop calling `cr_menu_lines` and one of the pick functions. Also the SSH forced-command entry point, and the `--ensure-anchor` entry point used by the install.sh LaunchAgent (see Keychain anchor below). `set -uo pipefail` (no `-e`: the attach/redraw loop must survive non-zero exits).
 
 **The pid join (the core idea).** `cr_launch` runs `claude` *directly* as the tmux exec target (`tmux new-session -d -- claude "$@"`), so `pane_pid == claude pid`. That shared pid is the join key: `cr_abtop_sessions` emits one TSV row per Claude session keyed by pid, `cr_pane_map` emits `pane_pid<TAB>session_name` for every tmux pane, and `cr_join` matches them — rows with a pane become attachable `S` rows, the rest are counted into a single `N` (running but not under claude-remote, so not attachable). Launching via the exec form also bypasses the user's interactive `claude` zsh function (equivalent to `command claude`), avoiding infinite recursion.
 
@@ -48,9 +48,11 @@ The first column of every menu line is the tmux session name (the attach key); t
 
 **Attach semantics.** `cr_launch` uses `exec tmux attach` (replaces the process) on direct launch, but the picker calls it inside a `( … )` subshell so the exec replaces only the subshell — the picker loop survives a detach and redraws. A plain attach in the loop (`$CR_TMUX attach`) is *not* exec'd for the same reason.
 
+**Keychain anchor (macOS).** A tmux server's launchd bootstrap namespace is fixed at birth and inherited by every pane. If the picker births the server from inside the iPad's SSH forced command (no server running yet), it lands in the `Background` domain, where Claude Code's login-keychain write (OAuth token refresh) fails with `errSecInteractionNotAllowed (-25308)` — there is no SecurityAgent route outside the GUI (`Aqua`) session. `cr_ensure_anchor` fixes this by birthing a hidden holding session (`CR_ANCHOR`, default `_cr_anchor`) *only when no server runs yet* (a no-op otherwise — never disturb a server it didn't birth). `install.sh` installs a per-user `LaunchAgent` (`de.valgard.claude-remote-anchor`, `LimitLoadToSessionType=Aqua`, `RunAtLoad` + `StartInterval=CR_ANCHOR_INTERVAL`, default 60s) that runs `claude-remote-pick --ensure-anchor` at GUI login and periodically (self-healing: re-establishes an `Aqua` server within one interval; the anchor session is hidden from the picker via `cr_menu_lines`). Only the *server birth* is anchored, never the `-- claude` pane command, so `pane_pid == claude pid` stays intact. A long-lived `CLAUDE_CODE_OAUTH_TOKEN` (which would bypass the keychain) was rejected because the user switches Team↔Max plans by re-login: Claude Code's macOS credential store is the login keychain (last in an auth-precedence chain — earlier tiers like `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` bypass it; there is no flag to disable the keychain on macOS), so native keychain OAuth must stay. Only meaningful while logged into the Mac GUI (the keychain is unreachable otherwise).
+
 ## Conventions that matter
 
-- **Env seams for testability:** all external-tool access goes through `CR_TMUX` (default `tmux`), `CR_ABTOP` (default `abtop`), `CR_SSH_PORT` (default `22`). Never call `tmux`/`abtop` directly in `lib/` — go through the variable. Tests override these to point at an isolated `tmux -L <socket>` server and stub binaries (`tests/fixtures/abtop-stub`, `tests/fixtures/fake-claude`), so the suite never touches the user's real sessions.
+- **Env seams for testability:** all external-tool access goes through `CR_TMUX` (default `tmux`), `CR_ABTOP` (default `abtop`), `CR_SSH_PORT` (default `22`), `CR_ANCHOR` (default `_cr_anchor`, the keychain-anchor holding session). Never call `tmux`/`abtop` directly in `lib/` — go through the variable. Tests override these to point at an isolated `tmux -L <socket>` server and stub binaries (`tests/fixtures/abtop-stub`, `tests/fixtures/fake-claude`), so the suite never touches the user's real sessions.
 - **Symlink-safe sourcing:** both bins resolve `BASH_SOURCE` through symlinks before sourcing the lib, because `install.sh` symlinks them into `~/.local/bin` while the lib stays next to the real script. Preserve this loop when editing the script headers.
 - **Stripped PATH:** `cr_augment_path` appends Homebrew / local bin dirs to `PATH` so `abtop`/`tmux`/`jq`/`fzf`/`claude` resolve under an SSH forced command (whose PATH is minimal). It *appends* (never prepends) so existing PATH entries keep priority.
 - **Idempotent installer:** `install.sh` must be re-runnable after a pull. Line appends to `~/.tmux.conf` go through `cr_ensure_line` (present-check + newline-safe append) — never a bare `>>`.
@@ -59,7 +61,7 @@ The first column of every menu line is the tmux session name (the attach key); t
 
 ## Tests
 
-bats-core suite under `tests/`, one file per concern (`join`, `render`, `pane_map`, `name`, `fallback`, `pick`, `launch`, `install`, `path`, `sshd`, `abtop_parse`). Each sources `tests/helpers.bash` via `load helpers`:
+bats-core suite under `tests/`, one file per concern (`join`, `render`, `pane_map`, `name`, `fallback`, `pick`, `launch`, `install`, `path`, `sshd`, `abtop_parse`, `anchor`). Each sources `tests/helpers.bash` via `load helpers`:
 
 - `cr_setup` / `cr_teardown` — isolated tmux server (unique `-L` socket per test), stub `abtop` and `claude` on PATH.
 - `cr_make_session <name>` — start a fake-claude session and echo its `pane_pid`.

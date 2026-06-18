@@ -61,7 +61,8 @@ What it does:
 3. Appends three tmux options to `~/.tmux.conf` if not already present:
    - `setw -g aggressive-resize on` and `set -g window-size latest` — size the window to the most recently active client, so the Mac is not permanently shrunk to a smaller iPad screen while both are attached (it resizes back as soon as the Mac is active again).
    - `bind-key S set-option status` — `Prefix+S` toggles the status line. `claude-remote` hides the status line per session (Claude's full-screen TUI uses the whole height); this lets you bring it back to glance at the session name or clock.
-4. Prints setup instructions (see below).
+4. Installs a per-user `LaunchAgent` (`~/Library/LaunchAgents/de.valgard.claude-remote-anchor.plist`, loaded only in the GUI/`Aqua` session). At login **and every `CR_ANCHOR_INTERVAL` seconds** (default 60) it runs `cr_ensure_anchor`, which starts a hidden tmux holding session **only when no tmux server is running** — otherwise it does nothing. This keeps the tmux server anchored in a Keychain-capable launchd domain. Without it, the **first** session started over SSH from the iPad would birth the server in the `Background` domain, where Claude Code's login-Keychain write (OAuth token refresh) fails with `errSecInteractionNotAllowed (-25308)`. The periodic check is self-healing (re-establishes an `Aqua` server within one interval if it ever dies) and makes the agent safe to load at any time: with sessions already running it no-ops, then takes over automatically once they end — no reboot needed. Only meaningful while you are logged into the Mac's GUI (the Keychain is unreachable otherwise anyway).
+5. Prints setup instructions (see below).
 
 Make sure `~/.local/bin` is in your `PATH`.
 
@@ -191,6 +192,8 @@ These variables let you substitute the real tools in tests or advanced configura
 | `CR_ABTOP` | `abtop` | abtop command (override to test fallback path) |
 | `CR_SSH_PORT` | `22` | port probed to detect whether sshd is listening |
 | `CR_COLOR` | `0` | set to `1` to ANSI-colour the status glyph and context % |
+| `CR_ANCHOR` | `_cr_anchor` | name of the hidden tmux holding session (see `cr_ensure_anchor`, the Keychain anchor) |
+| `CR_ANCHOR_INTERVAL` | `60` | install-time: seconds between the LaunchAgent's self-heal checks (`StartInterval`) |
 
 `claude` is resolved from `PATH` at launch time; there is no env seam for it.
 

@@ -137,6 +137,8 @@ Admin-SSH bleiben unberührt; ein zweiter, normaler Key bleibt als Wartungs-Bypa
 | Reboot | tmux-Server stirbt, Sessions weg (akzeptiert, dokumentiert) |
 | Fehlende Dependencies (`tmux`) | `claude-remote` meldet klar beim Start |
 
+> **Nachtrag (nach 2026-06-15):** Ein Keychain-Anker (`cr_ensure_anchor` + per-User-`LaunchAgent`, Branch `tmux-anchor`) kam später hinzu. Er sorgt dafür, dass der tmux-Server in der GUI-(`Aqua`-)launchd-Domain geboren wird, damit neue iPad-Sessions die Login-Keychain schreiben können (sonst scheitert der OAuth-Token-Refresh mit `errSecInteractionNotAllowed (-25308)`). Der `Reboot`-Fall oben wird dadurch beim nächsten GUI-Login automatisch wieder hergestellt. Maßgeblich für den aktuellen Stand sind CLAUDE.md/README, nicht diese datierte Spec.
+
 ## Sicherheit
 
 `command="claude-remote-pick"` beschränkt nur den **Eintrittspunkt**. Nach
