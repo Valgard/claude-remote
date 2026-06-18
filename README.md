@@ -2,7 +2,7 @@
 
 A thin shell wrapper that makes interactive [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions remotely attachable from another device — tested with an iPad running [Blink Shell](https://blink.sh) over the local network.
 
-See the full design rationale: [docs/superpowers/specs/2026-06-15-claude-remote-design.md](docs/superpowers/specs/2026-06-15-claude-remote-design.md)
+See the full design rationale: [docs/specs/2026-06-15-claude-remote-design.md](docs/specs/2026-06-15-claude-remote-design.md)
 
 ---
 
@@ -30,7 +30,7 @@ No long-running daemon of our own. We start nothing that does not already exist.
 
 - [tmux](https://github.com/tmux/tmux) `>= 3.0`
 - [jq](https://jqlang.github.io/jq/)
-- [abtop](https://github.com/anthropics/abtop) (Claude Code session metadata; the picker falls back gracefully if unavailable)
+- abtop (Claude Code session metadata; the picker falls back gracefully if unavailable)
 
 **Optional:**
 
@@ -189,6 +189,8 @@ These variables let you substitute the real tools in tests or advanced configura
 |---|---|---|
 | `CR_TMUX` | `tmux` | tmux command (override in tests with a stub) |
 | `CR_ABTOP` | `abtop` | abtop command (override to test fallback path) |
+| `CR_SSH_PORT` | `22` | port probed to detect whether sshd is listening |
+| `CR_COLOR` | `0` | set to `1` to ANSI-colour the status glyph and context % |
 
 `claude` is resolved from `PATH` at launch time; there is no env seam for it.
 
@@ -197,7 +199,7 @@ These variables let you substitute the real tools in tests or advanced configura
 ## Development
 
 ```bash
-make test       # run bats test suite (19 tests)
+make test       # run bats test suite
 make lint       # shellcheck all shell files
 make fmt        # format with shfmt (writes in place)
 make fmt-check  # check formatting without writing
