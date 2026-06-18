@@ -1,5 +1,8 @@
 # Git worktrees for isolated feature work
 .worktrees/
 
+# Superpowers scratch (plans + brainstorming) — never committed; specs live in docs/specs/
+docs/superpowers/
+
 # macOS
 .DS_Store
