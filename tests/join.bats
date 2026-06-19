@@ -22,5 +22,7 @@ teardown() { cr_teardown; }
   abtop_rows="$(printf '84717\tclaude-remote\tExecuting\t49\topus\tx\n')"
   run bash -c "source '${REPO_ROOT}/lib/claude-remote-lib.sh'; printf '%s\n' \"\$1\" | cr_join \"\$2\"" _ "$abtop_rows" "$panemap"
   [ "$status" -eq 0 ]
-  [[ "${lines[-1]}" == N$'\t'0 ]]
+  # bash 3.2 (macOS stock) has no negative array subscripts; index the last
+  # element via the computed length instead.
+  [[ "${lines[$((${#lines[@]} - 1))]}" == N$'\t'0 ]]
 }
