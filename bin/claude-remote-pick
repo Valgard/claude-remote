@@ -60,9 +60,9 @@ while true; do
     __QUIT__ | "") exit 0 ;;
     __NONE__ | __RELOAD__) : ;; # invalid choice or refresh → redraw (re-runs cr_menu_lines)
     __NEW__)
-      printf "Verzeichnis (leer = \$HOME): " >&2
+      printf "Verzeichnis (leer = %s): " "$CR_NEW_DIR" >&2
       read -r dir || dir=""
-      dir="${dir:-$HOME}"
+      dir="${dir:-$CR_NEW_DIR}"
       # `read -r` leaves input literal, so ~ and $HOME never expand. Do it by hand
       # (no eval — that would execute arbitrary input typed at this prompt).
       # SC2088: the tilde here is a literal match/strip target, not meant to expand.
