@@ -6,7 +6,7 @@
 : "${CR_ABTOP:=abtop}"
 : "${CR_SSH_PORT:=22}"
 : "${CR_ANCHOR:=_cr_anchor}"
-: "${CR_NEW_DIR:=${HOME}/Projects}"
+: "${CR_NEW_DIR:=~/Projects}"
 
 # (functions added by later tasks)
 
