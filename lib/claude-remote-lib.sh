@@ -10,6 +10,46 @@
 
 # (functions added by later tasks)
 
+# cr_resolve_new_dir <input> -> "<kind>\t<dir>" on stdout.
+# Resolves the picker's "neue Session" directory prompt. Ergonomics: a bare name
+# (no '/', no leading '~' or '$') is taken as a project under $CR_NEW_DIR, so on a
+# remote keyboard you type just "myproject" instead of the tilde-troublesome
+# "~/Projects/myproject" or a long absolute path.
+#   ""           -> path  $CR_NEW_DIR
+#   myproject    -> bare  $CR_NEW_DIR/myproject
+#   ~ , ~/x      -> path  $HOME , $HOME/x
+#   $HOME/x      -> path  (env expanded)
+#   /abs , rel/x -> path  (left as typed)
+# kind is "bare" only for the shortcut case, letting the caller offer to create a
+# missing bare-name dir while still rejecting a missing explicit path. Bare-name
+# prepending runs BEFORE the ~/$HOME expansion below, otherwise the cases overlap
+# (and CR_NEW_DIR itself defaults to the literal "~/Projects", so it needs it too).
+cr_resolve_new_dir() {
+  local dir="$1" kind=path
+  if [ -z "$dir" ]; then
+    dir="$CR_NEW_DIR"
+  else
+    case "$dir" in
+      */* | "~"* | '$'*) ;; # explicit path, home, or env-var -> leave as typed
+      *)
+        kind=bare
+        dir="${CR_NEW_DIR%/}/$dir"
+        ;;
+    esac
+  fi
+  # ~ and ${HOME}/$HOME stay literal under `read -r`, so expand them by hand (no
+  # eval -- the input is typed at an interactive prompt).
+  # SC2088: the tilde here is a literal match/strip target, not meant to expand.
+  # shellcheck disable=SC2088
+  case "$dir" in
+    "~") dir="$HOME" ;;
+    "~/"*) dir="$HOME/${dir#"~/"}" ;;
+  esac
+  dir="${dir//\$\{HOME\}/$HOME}"
+  dir="${dir//\$HOME/$HOME}"
+  printf '%s\t%s\n' "$kind" "$dir"
+}
+
 # cr_session_name <label> -> base session name (no pid suffix yet).
 # Uses the label if non-empty, else basename of $PWD. tmux session names
 # may not contain '.' or ':' and spaces are awkward, so collapse them to '_'.

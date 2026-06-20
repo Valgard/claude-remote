@@ -65,21 +65,28 @@ while true; do
       # bytes into the buffer). readline activates only on a terminal, so piped/test
       # input still behaves like a plain read. `-p` lets readline own the prompt so
       # its redraw stays aligned while editing (prompt still goes to stderr).
-      read -e -r -p "$(printf 'Verzeichnis (leer = %s): ' "$CR_NEW_DIR")" dir || dir=""
-      dir="${dir:-$CR_NEW_DIR}"
-      # `read -r` leaves input literal, so ~ and $HOME never expand. Do it by hand
-      # (no eval — that would execute arbitrary input typed at this prompt).
-      # SC2088: the tilde here is a literal match/strip target, not meant to expand.
-      # shellcheck disable=SC2088
-      case "$dir" in
-        "~") dir="$HOME" ;;
-        "~/"*) dir="$HOME/${dir#"~/"}" ;;
-      esac
-      dir="${dir//\$\{HOME\}/$HOME}"
-      dir="${dir//\$HOME/$HOME}"
+      read -e -r -p "$(printf 'Verzeichnis (leer = %s): ' "$CR_NEW_DIR")" input || input=""
+      # cr_resolve_new_dir applies the ergonomic shortcut (a bare name -> a project
+      # under CR_NEW_DIR) plus ~/$HOME expansion, tagging the result bare|path. A
+      # missing bare-name dir is offered for creation; a missing explicit path is
+      # still rejected (no surprising mkdir of a mistyped absolute path).
+      IFS=$'\t' read -r kind dir <<<"$(cr_resolve_new_dir "$input")"
       if [ ! -d "$dir" ]; then
-        printf "Kein Verzeichnis: %s\n" "$dir" >&2
-        continue
+        if [ "$kind" = bare ]; then
+          read -r -p "$(printf 'Verzeichnis %s existiert nicht. Anlegen? [j/N] ' "$dir")" yn || yn=""
+          case "$yn" in
+            j | J | y | Y)
+              mkdir -p "$dir" || {
+                printf "Konnte %s nicht anlegen\n" "$dir" >&2
+                continue
+              }
+              ;;
+            *) continue ;;
+          esac
+        else
+          printf "Kein Verzeichnis: %s\n" "$dir" >&2
+          continue
+        fi
       fi
       # Subshell: cr_launch execs `tmux attach`; running it in ( ) means the exec
       # replaces only the subshell, so the picker loop survives a detach here too.
