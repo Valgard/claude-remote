@@ -13,6 +13,9 @@ HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 . "${HERE}/../lib/claude-remote-lib.sh"
 # An SSH forced command runs with a minimal PATH; make our tools resolvable.
 cr_augment_path
+# A stripped env also lacks LANG/LC_*; pin a UTF-8 locale before any tmux server
+# is born (incl. the --ensure-anchor path) so Claude panes handle pasted UTF-8.
+cr_ensure_utf8_locale
 
 # --list: print menu lines (session<TAB>display) + footnote, then exit.
 if [ "${1:-}" = "--list" ]; then

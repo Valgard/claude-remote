@@ -13,6 +13,9 @@ HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 . "${HERE}/../lib/claude-remote-lib.sh"
 # An SSH forced command (or other stripped env) has a minimal PATH; make tools resolvable.
 cr_augment_path
+# The same stripped env lacks LANG/LC_*; pin a UTF-8 locale so the launched
+# claude pane handles multibyte (UTF-8) input/paste instead of mangling it.
+cr_ensure_utf8_locale
 
 usage() {
   cat >&2 <<'EOF'

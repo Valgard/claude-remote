@@ -278,6 +278,30 @@ cr_augment_path() {
   export PATH
 }
 
+# cr_ensure_utf8_locale: guarantee a UTF-8 character locale so Claude panes born
+# from the picker handle multibyte (UTF-8) input/paste correctly. Under a stripped
+# environment (SSH forced command, launchd) LANG/LC_* are often empty, leaving
+# child processes on the C/US-ASCII locale; tmux still renders glyphs via the
+# client's utf8 flag, but pasted UTF-8 is mangled by the ASCII input layer. We act
+# only when the effective character locale (LC_ALL > LC_CTYPE > LANG, POSIX order)
+# is not already UTF-8, and only set a locale the system actually provides. The
+# first available of CR_LOCALE (default de_DE.UTF-8), en_US.UTF-8, C.UTF-8 wins.
+cr_ensure_utf8_locale() {
+  local eff="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
+  case "$eff" in
+    *[Uu][Tt][Ff]-8 | *[Uu][Tt][Ff]8) return 0 ;;
+  esac
+  local avail cand
+  avail="$(locale -a 2>/dev/null)"
+  for cand in "${CR_LOCALE:-}" de_DE.UTF-8 en_US.UTF-8 C.UTF-8; do
+    [ -n "$cand" ] || continue
+    if printf '%s\n' "$avail" | grep -qxF "$cand"; then
+      export LANG="$cand" LC_CTYPE="$cand"
+      return 0
+    fi
+  done
+}
+
 # cr_pick_numbered <footnote> <menu-line>...
 # Renders a numbered menu on STDERR, reads one choice from stdin, and echoes a
 # selection TOKEN on stdout: a tmux session name, __NEW__, __QUIT__, __RELOAD__
