@@ -60,8 +60,12 @@ while true; do
     __QUIT__ | "") exit 0 ;;
     __NONE__ | __RELOAD__) : ;; # invalid choice or refresh → redraw (re-runs cr_menu_lines)
     __NEW__)
-      printf "Verzeichnis (leer = %s): " "$CR_NEW_DIR" >&2
-      read -r dir || dir=""
+      # `read -e` enables readline line editing: arrow keys move within the line
+      # (over SSH from e.g. an iPad the cursor keys otherwise leak raw ESC[C/ESC[D
+      # bytes into the buffer). readline activates only on a terminal, so piped/test
+      # input still behaves like a plain read. `-p` lets readline own the prompt so
+      # its redraw stays aligned while editing (prompt still goes to stderr).
+      read -e -r -p "$(printf 'Verzeichnis (leer = %s): ' "$CR_NEW_DIR")" dir || dir=""
       dir="${dir:-$CR_NEW_DIR}"
       # `read -r` leaves input literal, so ~ and $HOME never expand. Do it by hand
       # (no eval — that would execute arbitrary input typed at this prompt).
