@@ -12,9 +12,10 @@ Read `docs/specs/2026-06-15-claude-remote-design.md` for the full design rationa
 
 ```bash
 make test          # run the bats suite (tests/)
-make lint          # shellcheck the two bins, the lib, and install.sh
+make lint          # shellcheck the bins, the lib, and install.sh
 make fmt           # shfmt -w -i 2 -ci  (2-space indent, switch-case indented)
 make fmt-check     # shfmt diff check (CI-style, no write)
+make sign-tmux     # rebuild + ad-hoc sign tmux for macOS Local Network privacy
 
 bats tests/join.bats              # run a single test file
 bats -f "marks attachable" tests/ # run tests matching a name pattern
@@ -49,6 +50,8 @@ The first column of every menu line is the tmux session name (the attach key); t
 **Attach semantics.** `cr_launch` uses `exec tmux attach` (replaces the process) on direct launch, but the picker calls it inside a `( … )` subshell so the exec replaces only the subshell — the picker loop survives a detach and redraws. A plain attach in the loop (`$CR_TMUX attach`) is *not* exec'd for the same reason.
 
 **Keychain anchor (macOS).** A tmux server's launchd bootstrap namespace is fixed at birth and inherited by every pane. If the picker births the server from inside the iPad's SSH forced command (no server running yet), it lands in the `Background` domain, where Claude Code's login-keychain write (OAuth token refresh) fails with `errSecInteractionNotAllowed (-25308)` — there is no SecurityAgent route outside the GUI (`Aqua`) session. `cr_ensure_anchor` fixes this by birthing a hidden holding session (`CR_ANCHOR`, default `_cr_anchor`) *only when no server runs yet* (a no-op otherwise — never disturb a server it didn't birth). `install.sh` installs a per-user `LaunchAgent` (`de.valgard.claude-remote-anchor`, `LimitLoadToSessionType=Aqua`, `RunAtLoad` + `StartInterval=CR_ANCHOR_INTERVAL`, default 60s) that runs `claude-remote-pick --ensure-anchor` at GUI login and periodically (self-healing: re-establishes an `Aqua` server within one interval; the anchor session is hidden from the picker via `cr_menu_lines`). Only the *server birth* is anchored, never the `-- claude` pane command, so `pane_pid == claude pid` stays intact. A long-lived `CLAUDE_CODE_OAUTH_TOKEN` (which would bypass the keychain) was rejected because the user switches Team↔Max plans by re-login: Claude Code's macOS credential store is the login keychain (last in an auth-precedence chain — earlier tiers like `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` bypass it; there is no flag to disable the keychain on macOS), so native keychain OAuth must stay. Only meaningful while logged into the Mac GUI (the keychain is unreachable otherwise).
+
+**Local Network privacy (macOS).** macOS gates LAN access per app via the Local Network privacy permission, attributed to the *responsible process* — for picker sessions that is the tmux server. Homebrew's tmux carries no `Info.plist`, so macOS treats it as unidentified and silently blocks LAN connections from picker-born sessions (e.g. `git push` to a remote on the LAN, "no route to host") while public internet still works. The permission pane has no "+" to add a CLI tool, and Local Network state is not managed by `tccutil`/MDM, so it can't be granted the usual ways. `bin/cr-sign-tmux` (via `make sign-tmux`) rebuilds tmux from source with an embedded `Info.plist` (`CFBundleIdentifier` + `NSLocalNetworkUsageDescription`) and ad-hoc signs it — turning tmux into an identified app macOS *can* grant. It smoke-tests the new binary on an isolated socket and backs up the original (`<tmux>.cr-orig`) before installing. Activation needs `tmux kill-server` (reloads the binary off disk) plus a one-time "Allow" on the macOS prompt; re-run after `brew upgrade tmux` (Homebrew overwrites the patched binary). `install.sh` never builds/replaces tmux itself — it only prints a hint (via `cr-sign-tmux --check`, read-only) when the installed tmux is unpatched.
 
 ## Conventions that matter
 

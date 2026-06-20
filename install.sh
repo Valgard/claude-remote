@@ -7,6 +7,7 @@ BIN_DIR="${HOME}/.local/bin"
 mkdir -p "$BIN_DIR"
 ln -sf "${HERE}/bin/claude-remote" "${BIN_DIR}/claude-remote"
 ln -sf "${HERE}/bin/claude-remote-pick" "${BIN_DIR}/claude-remote-pick"
+ln -sf "${HERE}/bin/cr-sign-tmux" "${BIN_DIR}/cr-sign-tmux"
 
 # tmux: size the window to the most recently active client, so the Mac is not
 # permanently shrunk to the iPad's smaller resolution while both are attached —
@@ -98,5 +99,18 @@ if ! cr_sshd_running; then
 
 ⚠️  Remote Login (sshd) is currently OFF — the iPad cannot connect yet.
     Enable it once:  sudo systemsetup -setremotelogin on
+EOF
+fi
+
+# Local Network privacy hint (macOS): Homebrew's tmux carries no Info.plist, so
+# macOS silently blocks LAN access from picker-born sessions (e.g. a git remote on
+# the LAN) while public internet still works. --check is read-only (no rebuild);
+# only surface the opt-in fix when tmux is not yet patched.
+if command -v tmux >/dev/null 2>&1 && ! "${BIN_DIR}/cr-sign-tmux" --check >/dev/null 2>&1; then
+  cat <<'EOF'
+
+ℹ️  Need LAN access (e.g. a git remote on your local network) from picker
+    sessions? macOS Local Network privacy blocks Homebrew's tmux. Fix it once:
+        make sign-tmux     # rebuild + ad-hoc sign tmux, then run: tmux kill-server
 EOF
 fi
