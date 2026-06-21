@@ -38,6 +38,9 @@ fi
 # menu prints to the terminal directly). --list stays plain (CR_COLOR unset).
 export CR_COLOR=1
 while true; do
+  # Reap stale post-exit captures (drain no longer deletes, so several clients of
+  # a multi-client session can each read it; old files are cleaned out of band).
+  cr_reap_exit_files
   tmpd="$(mktemp -d)"
   cr_menu_lines >"${tmpd}/menu" 2>"${tmpd}/foot" || true
   menu=()

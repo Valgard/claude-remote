@@ -51,7 +51,19 @@ teardown() { cr_teardown; }
   [[ "$output" == *"Resume: claude --resume abc"* ]]
   ! grep -q 'Pane is dead' <<<"$output"               # tmux banner filtered out
   [ "$(printf '%s\n' "$output" | tail -1)" = "Resume: claude --resume abc" ]  # trailing blanks trimmed
-  [ ! -e "$(cr_exit_file sess-1)" ]                    # capture file consumed
+}
+
+@test "cr_drain_exit_output does NOT delete the file, so a second attached client can read it too" {
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  export CR_EXIT_DIR="$(mktemp -d)"
+  printf 'Resume: claude --resume abc\n' >"$(cr_exit_file sess-1)"
+  run cr_drain_exit_output sess-1               # first client (e.g. iTerm)
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Resume: claude --resume abc"* ]]
+  [ -e "$(cr_exit_file sess-1)" ]              # file survives for other clients
+  run cr_drain_exit_output sess-1               # second client (e.g. the iPad picker)
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Resume: claude --resume abc"* ]]
 }
 
 @test "cr_drain_exit_output returns non-zero and prints nothing when the session has no capture" {
@@ -70,10 +82,9 @@ teardown() { cr_teardown; }
   run cr_drain_exit_output sess-1
   [ "$status" -ne 0 ]
   [ -z "$output" ]
-  [ ! -e "$(cr_exit_file sess-1)" ] # still consumed
 }
 
-@test "cr_drain_exit_output drains ONLY the named session, leaving other sessions' captures intact" {
+@test "cr_drain_exit_output drains ONLY the named session, never another session's leftover" {
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
   d="$(mktemp -d)"
   export CR_EXIT_DIR="$d"
@@ -83,8 +94,30 @@ teardown() { cr_teardown; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"mine: claude --resume mine"* ]]
   ! grep -q 'iter-16.1' <<<"$output"           # never shows another session's leftover
-  [ ! -e "$(cr_exit_file sessA)" ]             # own file consumed
   [ -e "$(cr_exit_file sessB)" ]               # other session's file untouched
+}
+
+# --- cr_reap_exit_files --------------------------------------------------------
+
+@test "cr_reap_exit_files removes stale capture files but keeps fresh ones" {
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  d="$(mktemp -d)"
+  export CR_EXIT_DIR="$d"
+  printf 'fresh\n' >"$(cr_exit_file fresh-sess)"
+  printf 'old\n' >"$(cr_exit_file old-sess)"
+  # backdate the stale one well past the reap grace
+  touch -t "$(date -v-10M +%Y%m%d%H%M 2>/dev/null || date -d '10 min ago' +%Y%m%d%H%M)" "$(cr_exit_file old-sess)"
+  run cr_reap_exit_files
+  [ "$status" -eq 0 ]
+  [ -e "$(cr_exit_file fresh-sess)" ] # recent capture, a client may still read it
+  [ ! -e "$(cr_exit_file old-sess)" ] # long dead, reaped
+}
+
+@test "cr_reap_exit_files is a no-op when the exit dir does not exist" {
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  export CR_EXIT_DIR="$(mktemp -u)" # does not exist
+  run cr_reap_exit_files
+  [ "$status" -eq 0 ]
 }
 
 # --- cr_configure_exit_capture -------------------------------------------------
@@ -145,12 +178,11 @@ teardown() { cr_teardown; }
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
   d="$(mktemp -d)"
   export CR_EXIT_DIR="$d"
-  printf 'SESSION-ID: drainme\n' >"$d/ghost"
+  printf 'SESSION-ID: drainme\n' >"$(cr_exit_file ghost)"
   # The bare attach to a non-existent session fails fast (no tty / no session);
   # the drain must still run afterwards, and wait=0 must not pause.
   run cr_attach_and_drain ghost 0
   [[ "$output" == *"SESSION-ID: drainme"* ]]
-  [ ! -e "$d/ghost" ]
 }
 
 @test "cr_reattach arms capture on a pre-existing (foreign) session" {

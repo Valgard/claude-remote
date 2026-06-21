@@ -136,15 +136,20 @@ cr_exit_buf() {
   printf 'cr_exit_%s\n' "$(cr_sanitize_name "$1")"
 }
 
-# cr_drain_exit_output <session>: print and remove the post-exit capture file for
-# <session> (written by its pane-died hook). Drops tmux's own "Pane is dead
-# (status …)" banner and the blank padding capture-pane leaves, then prints what
-# Claude actually wrote — raw, no header. Session-specific on purpose: it must
-# never surface a *different* (or stale) session's leftover file, and on a plain
-# detach (session still alive, so no capture for it) it correctly shows nothing.
-# The banner match tolerates leading whitespace in case a tmux build centres it.
-# Returns 0 iff the file existed and yielded non-empty output, so a caller can
-# decide whether to pause afterwards (the picker does; the wrapper doesn't).
+# cr_drain_exit_output <session>: print the post-exit capture file for <session>
+# (written by its pane-died hook). Drops tmux's own "Pane is dead (status …)"
+# banner and the blank padding capture-pane leaves, then prints what Claude
+# actually wrote — raw, no header. Session-specific on purpose: it must never
+# surface a *different* (or stale) session's leftover file, and on a plain detach
+# (session still alive, so no capture for it) it correctly shows nothing. It does
+# **not** delete the file: a dying session may have several clients attached
+# (e.g. the launching iTerm window AND a re-attached iPad), each of which returns
+# from `tmux attach` and drains — deleting here lets the first client win the race
+# and leaves the others (incl. the picker that wants to pause) with nothing.
+# Cleanup is out of band via cr_reap_exit_files. The banner match tolerates
+# leading whitespace in case a tmux build centres it. Returns 0 iff the file
+# existed and yielded non-empty output, so a caller can decide whether to pause
+# afterwards (the picker does; the wrapper doesn't).
 cr_drain_exit_output() {
   local file content
   file="$(cr_exit_file "$1")"
@@ -154,9 +159,23 @@ cr_drain_exit_output() {
     { line[NR] = $0 }
     END { for (i = s; i <= e; i++) print line[i] }
   ')"
-  rm -f "$file"
   [ -n "$content" ] || return 1
   printf '%s\n' "$content"
+}
+
+# cr_reap_exit_files: delete capture files older than the reap grace (default 1
+# minute, override with CR_EXIT_TTL_MIN). Because cr_drain_exit_output no longer
+# deletes (so every client of a multi-client session can read the same capture),
+# files must be cleaned up here. A file older than the grace belongs to a session
+# that died long ago — the file is written at death and read by all attached
+# clients within ~a second — so removing it is safe and never races a reader.
+# Called at the picker loop top and once by the wrapper.
+cr_reap_exit_files() {
+  local dir
+  dir="$(cr_exit_dir)"
+  [ -d "$dir" ] || return 0
+  find "$dir" -maxdepth 1 -type f -mmin +"${CR_EXIT_TTL_MIN:-1}" -delete 2>/dev/null
+  return 0
 }
 
 # cr_configure_exit_capture <session>: arm <session> so its post-exit output is

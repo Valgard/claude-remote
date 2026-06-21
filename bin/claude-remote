@@ -59,6 +59,9 @@ if ! cr_sshd_running; then
   echo "             Aktivieren: sudo systemsetup -setremotelogin on" >&2
 fi
 
+# Reap stale post-exit captures up front (drain no longer deletes; see lib).
+cr_reap_exit_files
+
 name="$(cr_session_name "$label")"
 # wait=0: on a direct launch the post-exit output (drained inside cr_launch's
 # attach path) just stays in the scrollback above the returning shell prompt —
