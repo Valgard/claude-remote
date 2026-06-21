@@ -154,7 +154,10 @@ cr_drain_exit_output() {
   local file content
   file="$(cr_exit_file "$1")"
   [ -f "$file" ] || return 1
-  content="$(grep -vE '^[[:space:]]*Pane is dead \(status ' "$file" | awk '
+  # 2>/dev/null: another attached client (or an old pre-fix client) can unlink the
+  # file between the [ -f ] check above and this read — swallow grep's "No such
+  # file"/"Permission denied" so a lost race yields "nothing to show", not noise.
+  content="$(grep -vE '^[[:space:]]*Pane is dead \(status ' "$file" 2>/dev/null | awk '
     NF { if (!s) s = NR; e = NR }
     { line[NR] = $0 }
     END { for (i = s; i <= e; i++) print line[i] }

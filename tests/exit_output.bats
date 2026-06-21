@@ -66,6 +66,17 @@ teardown() { cr_teardown; }
   [[ "$output" == *"Resume: claude --resume abc"* ]]
 }
 
+@test "cr_drain_exit_output stays silent on stderr when the capture file is unreadable/vanishing" {
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  export CR_EXIT_DIR="$(mktemp -d)"
+  printf 'Resume: claude --resume abc\n' >"$(cr_exit_file sess-1)"
+  chmod 000 "$(cr_exit_file sess-1)" # exists for [ -f ] but grep can't read it: proxy for a mid-drain unlink
+  run --separate-stderr cr_drain_exit_output sess-1
+  [ "$status" -ne 0 ]        # nothing shown
+  [ -z "$stderr" ]           # no "Permission denied"/"No such file" noise leaks out
+  chmod 644 "$(cr_exit_file sess-1)" 2>/dev/null || true
+}
+
 @test "cr_drain_exit_output returns non-zero and prints nothing when the session has no capture" {
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
   export CR_EXIT_DIR="$(mktemp -d)" # empty dir
