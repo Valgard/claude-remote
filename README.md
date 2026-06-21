@@ -146,6 +146,8 @@ claude-remote-pick [--list]
 
 Lists running Claude sessions and lets you attach to one.
 
+When a session ends (you quit Claude, or it exits), the few lines Claude prints on its way out — e.g. the session id for `claude --resume` — are shown to you instead of a bare tmux `[exited]`. In the picker you press a key to dismiss them and return to the menu; with the direct `claude-remote` wrapper they simply remain in your scrollback.
+
 - `--list` — prints the menu non-interactively (one `session<TAB>display` line per session) and exits. Useful for scripting or debugging. The non-attachable footnote, if any, is written to stderr (not stdout).
 - Without flags — interactive picker. If `fzf` is installed and the picker runs on a terminal, sessions are chosen via fuzzy search (Enter attaches, `Ctrl-R` refreshes the list, `ESC` quits); otherwise a numbered menu is shown (select a number to attach, `r` refreshes, `q` quits). Either way, a `＋ neue Session` entry starts a new session (prompts for a directory). At that prompt you can type a bare project name (no `/`, no leading `~`) and it resolves to a directory under `$CR_NEW_DIR` (default `~/Projects`) — so `myproject` means `~/Projects/myproject`, sparing you the awkward `~`/long-absolute-path typing on a remote keyboard; if it doesn't exist yet you're asked whether to create it (`Anlegen? [j/N]`). An empty input uses `$CR_NEW_DIR` itself, and explicit paths (`~/…`, `$HOME/…`, `/abs`) are taken as typed. Refreshing re-queries `abtop`/`tmux` so newly started or exited sessions show up without leaving the picker.
 
@@ -201,6 +203,7 @@ These variables let you substitute the real tools in tests or advanced configura
 | `CR_ANCHOR_INTERVAL` | `60` | install-time: seconds between the LaunchAgent's self-heal checks (`StartInterval`) |
 | `CR_NEW_DIR` | `~/Projects` | base directory the picker's `＋ neue Session` prompt offers on empty input and resolves a bare project name against (`myproject` → `~/Projects/myproject`) |
 | `CR_LOCALE` | `de_DE.UTF-8` | UTF-8 locale pinned before any tmux server is born so picker/iPad panes handle pasted multibyte text (falls back to `en_US.UTF-8`, then `C.UTF-8`; only a locale `locale -a` lists is used) |
+| `CR_EXIT_DIR` | `<tmpdir>/claude-remote-exit` | directory where the `pane-died` hooks drop a session's captured post-exit output for the wrapper/picker to drain (override in tests with an isolated dir) |
 
 `claude` is resolved from `PATH` at launch time; there is no env seam for it.
 

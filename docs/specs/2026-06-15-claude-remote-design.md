@@ -139,6 +139,8 @@ Admin-SSH bleiben unberührt; ein zweiter, normaler Key bleibt als Wartungs-Bypa
 
 > **Nachtrag (nach 2026-06-15):** Ein Keychain-Anker (`cr_ensure_anchor` + per-User-`LaunchAgent`, Branch `tmux-anchor`) kam später hinzu. Er sorgt dafür, dass der tmux-Server in der GUI-(`Aqua`-)launchd-Domain geboren wird, damit neue iPad-Sessions die Login-Keychain schreiben können (sonst scheitert der OAuth-Token-Refresh mit `errSecInteractionNotAllowed (-25308)`). Der `Reboot`-Fall oben wird dadurch beim nächsten GUI-Login automatisch wieder hergestellt. Maßgeblich für den aktuellen Stand sind CLAUDE.md/README, nicht diese datierte Spec.
 
+> **Nachtrag (nach 2026-06-15):** Der oben skizzierte `exec tmux attach` wurde abgelöst: `cr_launch` `exec`t das Attach nicht mehr, damit nach dem Session-Ende noch Code läuft, der Claude Codes Post-Exit-Output einfängt und anzeigt (statt nur tmux' `[exited]`). Mechanik: `cr_configure_exit_capture` setzt `remain-on-exit` + einen `pane-died`-Hook, `cr_drain_exit_output` zeigt das Ergebnis. Details in CLAUDE.md („Post-exit output capture"/„Attach semantics") — maßgeblich, nicht diese datierte Spec.
+
 ## Sicherheit
 
 `command="claude-remote-pick"` beschränkt nur den **Eintrittspunkt**. Nach
