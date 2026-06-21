@@ -3,6 +3,15 @@
 # Stays alive so the tmux pane it runs in does not exit immediately.
 # Echoes its args to a file so tests can assert passthrough.
 if [ -n "${FAKE_CLAUDE_ARGV_FILE:-}" ]; then
-  printf '%s\n' "$*" > "$FAKE_CLAUDE_ARGV_FILE"
+  printf '%s\n' "$*" >"$FAKE_CLAUDE_ARGV_FILE"
+fi
+# Exit mode (for post-exit-output tests): wait long enough for cr_launch to read
+# the pane pid, print the given lines to the pane, then exit — simulating what
+# Claude writes to the primary screen after leaving its TUI. FAKE_CLAUDE_EXIT_LINES
+# is interpreted with printf %b, so use \n for line breaks.
+if [ -n "${FAKE_CLAUDE_EXIT_LINES:-}" ]; then
+  sleep "${FAKE_CLAUDE_EXIT_DELAY:-1}"
+  printf '%b' "$FAKE_CLAUDE_EXIT_LINES"
+  exit 0
 fi
 exec sleep 600

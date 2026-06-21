@@ -43,7 +43,7 @@ teardown() { cr_teardown; }
 
 @test "cr_launch does not crash without a -- separator under set -u" {
   cd /tmp
-  run bash -c "set -u; source '${REPO_ROOT}/lib/claude-remote-lib.sh'; cr_launch foo 0"
+  run bash -c "set -u; source '${REPO_ROOT}/lib/claude-remote-lib.sh'; cr_launch foo 0 0"
   [ "$status" -eq 0 ]
   [[ "$output" =~ ^foo-[0-9]+$ ]]
 }

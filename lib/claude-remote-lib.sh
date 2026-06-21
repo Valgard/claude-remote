@@ -63,14 +63,18 @@ cr_session_name() {
   printf '%s\n' "$name" | tr ' ./:' '____'
 }
 
-# cr_launch <name> <attach:0|1> -- <claude args...>
+# cr_launch <name> <attach:0|1> <wait:0|1> -- <claude args...>
 # Creates a detached tmux session running claude directly, so pane_pid == claude pid.
 # `claude` is resolved from PATH by tmux's exec form (no shell involved, so the
 # interactive claude zsh function never enters the picture — equivalent to
-# `command claude`). Renames the session to <name>-<pane_pid>, then optionally attaches.
+# `command claude`). Renames the session to <name>-<pane_pid>, arms post-exit
+# capture, then either attaches (cr_attach_and_drain, honouring <wait>) or, in
+# no-attach mode, prints the session name. Shared by the wrapper and the picker's
+# new-session path. The attach is NOT exec'd (see cr_attach), so the caller
+# regains control to drain Claude's post-exit output instead of just "[exited]".
 cr_launch() {
-  local name="$1" attach="$2"
-  shift 2
+  local name="$1" attach="$2" wait="$3"
+  shift 3
   [ "${1-}" = "--" ] && shift
   local tmp pid final
   tmp="${name}-tmp-$$"
@@ -92,11 +96,131 @@ cr_launch() {
   # so don't fail the launch if it doesn't take.
   # shellcheck disable=SC2086
   $CR_TMUX set-option -t "$final" status off 2>/dev/null || true
+  cr_configure_exit_capture "$final"
   if [ "$attach" -eq 1 ]; then
-    # shellcheck disable=SC2086
-    exec $CR_TMUX attach -t "$final"
+    cr_attach_and_drain "$final" "$wait"
+    return 0
   fi
   printf '%s\n' "$final"
+}
+
+# --- post-exit output capture --------------------------------------------------
+# When Claude leaves its full-screen TUI it prints a couple of lines to the
+# primary screen (e.g. the session id). Those vanish the instant claude exits:
+# tmux tears the session down and the attached client only sees "[exited]". We
+# hold the dead pane (remain-on-exit) just long enough for a pane-died hook to
+# capture the primary-screen history to a file and kill the session itself; the
+# attaching caller then drains and prints that file.
+
+# cr_sanitize_name <s> -> <s> with anything outside [A-Za-z0-9._-] collapsed to
+# '_', so a session name is safe both as a path segment and a tmux buffer name.
+cr_sanitize_name() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# cr_exit_dir -> directory holding per-session post-exit capture files.
+# Override with CR_EXIT_DIR (tests point this at an isolated dir).
+cr_exit_dir() {
+  local base="${TMPDIR:-/tmp}"
+  base="${base%/}"
+  printf '%s\n' "${CR_EXIT_DIR:-${base}/claude-remote-exit}"
+}
+
+# cr_exit_file <session> -> absolute path of the capture file for <session>.
+cr_exit_file() {
+  printf '%s/%s\n' "$(cr_exit_dir)" "$(cr_sanitize_name "$1")"
+}
+
+# cr_exit_buf <session> -> the (path-free) tmux paste-buffer name for <session>.
+cr_exit_buf() {
+  printf 'cr_exit_%s\n' "$(cr_sanitize_name "$1")"
+}
+
+# cr_drain_exit_output: print and remove any pending post-exit capture files
+# (written by the pane-died hook, see cr_configure_exit_capture). For each file,
+# drop tmux's own "Pane is dead (status …)" banner and the blank padding that
+# capture-pane leaves, then print what Claude actually wrote — raw, no header.
+# The banner match tolerates leading whitespace in case a tmux build centres it.
+# Returns 0 iff at least one file yielded non-empty output, so a caller can
+# decide whether to pause afterwards (the picker does; the wrapper doesn't).
+cr_drain_exit_output() {
+  local dir f content shown=1
+  dir="$(cr_exit_dir)"
+  [ -d "$dir" ] || return 1
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    content="$(grep -vE '^[[:space:]]*Pane is dead \(status ' "$f" | awk '
+      NF { if (!s) s = NR; e = NR }
+      { line[NR] = $0 }
+      END { for (i = s; i <= e; i++) print line[i] }
+    ')"
+    rm -f "$f"
+    [ -n "$content" ] || continue
+    printf '%s\n' "$content"
+    shown=0
+  done
+  return "$shown"
+}
+
+# cr_configure_exit_capture <session>: arm <session> so its post-exit output is
+# preserved. Sets remain-on-exit so the pane is held (not destroyed) when claude
+# exits — that both keeps the primary-screen grid AND fires pane-died — then
+# installs a 4-command pane-died hook that copies the full grid history into a
+# paste buffer (-S - -E -: the dead-pane banner repaint pushes the top line(s)
+# out of the visible area, so visible-only capture would lose them), saves it to
+# the per-session file, deletes the buffer, and kills the session. Pure tmux
+# commands (no `run-shell 'tmux …'`) so they hit THIS server's socket. Idempotent:
+# `set-hook` (no -a) replaces the hook, the appends rebuild it, so re-arming the
+# same session yields the identical 4-command hook with no accumulation. Values
+# are baked in by our shell (not tmux #{} formats) so names stay per-session.
+cr_configure_exit_capture() {
+  local session="$1" file buf
+  file="$(cr_exit_file "$session")"
+  buf="$(cr_exit_buf "$session")"
+  mkdir -p "$(cr_exit_dir)" 2>/dev/null || true
+  # shellcheck disable=SC2086
+  $CR_TMUX set-option -w -t "$session" remain-on-exit on 2>/dev/null || true
+  # shellcheck disable=SC2086
+  $CR_TMUX set-hook -t "$session" pane-died "capture-pane -b '$buf' -S - -E -" 2>/dev/null || true
+  # shellcheck disable=SC2086
+  $CR_TMUX set-hook -a -t "$session" pane-died "save-buffer -b '$buf' '$file'" 2>/dev/null || true
+  # shellcheck disable=SC2086
+  $CR_TMUX set-hook -a -t "$session" pane-died "delete-buffer -b '$buf'" 2>/dev/null || true
+  # shellcheck disable=SC2086
+  $CR_TMUX set-hook -a -t "$session" pane-died "kill-session -t '$session'" 2>/dev/null || true
+}
+
+# cr_attach <session>: attach to <session>. Deliberately NOT exec'd — the caller
+# (the wrapper, or the picker loop / its new-session subshell) must regain control
+# afterwards to drain Claude's post-exit output and, in the picker, redraw.
+cr_attach() {
+  # shellcheck disable=SC2086
+  $CR_TMUX attach -t "$1"
+}
+
+# cr_attach_and_drain <session> <wait:0|1>: attach, then surface whatever Claude
+# printed after leaving its TUI (cr_drain_exit_output). With wait=1 (the picker)
+# pause for a keypress so that output survives the picker's next full-screen
+# redraw (fzf uses the alternate screen); the wrapper passes wait=0 — its output
+# just stays in the scrollback above the shell prompt. The prompt goes to stderr
+# and the read tolerates EOF, so piped/test stdin never hangs. `|| true` on the
+# attach keeps a failed/ended attach from tripping the wrapper's `set -e`.
+cr_attach_and_drain() {
+  local session="$1" wait="$2"
+  cr_attach "$session" || true
+  if cr_drain_exit_output && [ "$wait" -eq 1 ]; then
+    printf 'Weiter mit Enter … ' >&2
+    read -r _ || true
+  fi
+}
+
+# cr_reattach <session> <wait:0|1>: arm capture on an already-running session
+# (it may predate this feature or have been started outside claude-remote), then
+# attach + drain exactly like a fresh launch. Picker-only — the wrapper never
+# re-attaches. Symmetric with cr_launch: both delegate to the same building blocks.
+cr_reattach() {
+  cr_configure_exit_capture "$1"
+  cr_attach_and_drain "$1" "$2"
 }
 
 # cr_ensure_anchor: if no tmux server is running yet, birth one via a detached

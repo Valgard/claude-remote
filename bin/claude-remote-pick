@@ -91,13 +91,16 @@ while true; do
           continue
         fi
       fi
-      # Subshell: cr_launch execs `tmux attach`; running it in ( ) means the exec
-      # replaces only the subshell, so the picker loop survives a detach here too.
-      (cd "$dir" && cr_launch "$(cr_session_name "")" 1 --)
+      # Subshell keeps the `cd` local to this launch. attach=1, wait=1: cr_launch
+      # attaches (not exec'd), then on session end drains Claude's post-exit
+      # output and waits for a keypress so it survives the next full-screen redraw.
+      (cd "$dir" && cr_launch "$(cr_session_name "")" 1 1 --)
       ;;
     *)
-      # shellcheck disable=SC2086
-      $CR_TMUX attach -t "$selection"
+      # Re-attach to a running session: arm capture (it may predate this feature
+      # or have been started outside claude-remote), attach, drain, wait — same
+      # contract as a fresh launch above.
+      cr_reattach "$selection" 1
       ;;
   esac
 done

@@ -60,4 +60,7 @@ if ! cr_sshd_running; then
 fi
 
 name="$(cr_session_name "$label")"
-cr_launch "$name" "$attach" -- "$@"
+# wait=0: on a direct launch the post-exit output (drained inside cr_launch's
+# attach path) just stays in the scrollback above the returning shell prompt —
+# no keypress needed (unlike the picker, which redraws over it).
+cr_launch "$name" "$attach" 0 -- "$@"
