@@ -39,25 +39,25 @@ teardown() { cr_teardown; }
 
 # --- cr_drain_exit_output ------------------------------------------------------
 
-@test "cr_drain_exit_output prints captured lines, dropping the dead-pane banner and blank padding" {
+@test "cr_drain_exit_output prints the named session's captured lines, dropping banner and blank padding" {
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
   d="$(mktemp -d)"
   export CR_EXIT_DIR="$d"
-  printf 'SESSION-ID: abc\nResume: claude --resume abc\nPane is dead (status 0, Sun Jun 21)\n\n\n' >"$d/sess-1"
-  run cr_drain_exit_output
+  printf 'SESSION-ID: abc\nResume: claude --resume abc\nPane is dead (status 0, Sun Jun 21)\n\n\n' \
+    >"$(cr_exit_file sess-1)"
+  run cr_drain_exit_output sess-1
   [ "$status" -eq 0 ]                                  # 0 == something was shown
   [[ "$output" == *"SESSION-ID: abc"* ]]
   [[ "$output" == *"Resume: claude --resume abc"* ]]
   ! grep -q 'Pane is dead' <<<"$output"               # tmux banner filtered out
   [ "$(printf '%s\n' "$output" | tail -1)" = "Resume: claude --resume abc" ]  # trailing blanks trimmed
-  [ ! -e "$d/sess-1" ]                                 # capture file consumed
+  [ ! -e "$(cr_exit_file sess-1)" ]                    # capture file consumed
 }
 
-@test "cr_drain_exit_output returns non-zero and prints nothing when there is no capture" {
+@test "cr_drain_exit_output returns non-zero and prints nothing when the session has no capture" {
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
-  d="$(mktemp -d)" # empty dir
-  export CR_EXIT_DIR="$d"
-  run cr_drain_exit_output
+  export CR_EXIT_DIR="$(mktemp -d)" # empty dir
+  run cr_drain_exit_output some-session
   [ "$status" -ne 0 ]
   [ -z "$output" ]
 }
@@ -66,11 +66,25 @@ teardown() { cr_teardown; }
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
   d="$(mktemp -d)"
   export CR_EXIT_DIR="$d"
-  printf '   Pane is dead (status 0, x)\n\n\n' >"$d/sess-1" # leading spaces: tolerant filter
-  run cr_drain_exit_output
+  printf '   Pane is dead (status 0, x)\n\n\n' >"$(cr_exit_file sess-1)" # leading spaces: tolerant filter
+  run cr_drain_exit_output sess-1
   [ "$status" -ne 0 ]
   [ -z "$output" ]
-  [ ! -e "$d/sess-1" ] # still consumed
+  [ ! -e "$(cr_exit_file sess-1)" ] # still consumed
+}
+
+@test "cr_drain_exit_output drains ONLY the named session, leaving other sessions' captures intact" {
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  d="$(mktemp -d)"
+  export CR_EXIT_DIR="$d"
+  printf 'mine: claude --resume mine\n' >"$(cr_exit_file sessA)"
+  printf 'stale: claude --resume iter-16.1\n' >"$(cr_exit_file sessB)" # a different session's leftover
+  run cr_drain_exit_output sessA
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mine: claude --resume mine"* ]]
+  ! grep -q 'iter-16.1' <<<"$output"           # never shows another session's leftover
+  [ ! -e "$(cr_exit_file sessA)" ]             # own file consumed
+  [ -e "$(cr_exit_file sessB)" ]               # other session's file untouched
 }
 
 # --- cr_configure_exit_capture -------------------------------------------------

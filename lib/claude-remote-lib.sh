@@ -136,30 +136,27 @@ cr_exit_buf() {
   printf 'cr_exit_%s\n' "$(cr_sanitize_name "$1")"
 }
 
-# cr_drain_exit_output: print and remove any pending post-exit capture files
-# (written by the pane-died hook, see cr_configure_exit_capture). For each file,
-# drop tmux's own "Pane is dead (status …)" banner and the blank padding that
-# capture-pane leaves, then print what Claude actually wrote — raw, no header.
+# cr_drain_exit_output <session>: print and remove the post-exit capture file for
+# <session> (written by its pane-died hook). Drops tmux's own "Pane is dead
+# (status …)" banner and the blank padding capture-pane leaves, then prints what
+# Claude actually wrote — raw, no header. Session-specific on purpose: it must
+# never surface a *different* (or stale) session's leftover file, and on a plain
+# detach (session still alive, so no capture for it) it correctly shows nothing.
 # The banner match tolerates leading whitespace in case a tmux build centres it.
-# Returns 0 iff at least one file yielded non-empty output, so a caller can
+# Returns 0 iff the file existed and yielded non-empty output, so a caller can
 # decide whether to pause afterwards (the picker does; the wrapper doesn't).
 cr_drain_exit_output() {
-  local dir f content shown=1
-  dir="$(cr_exit_dir)"
-  [ -d "$dir" ] || return 1
-  for f in "$dir"/*; do
-    [ -f "$f" ] || continue
-    content="$(grep -vE '^[[:space:]]*Pane is dead \(status ' "$f" | awk '
-      NF { if (!s) s = NR; e = NR }
-      { line[NR] = $0 }
-      END { for (i = s; i <= e; i++) print line[i] }
-    ')"
-    rm -f "$f"
-    [ -n "$content" ] || continue
-    printf '%s\n' "$content"
-    shown=0
-  done
-  return "$shown"
+  local file content
+  file="$(cr_exit_file "$1")"
+  [ -f "$file" ] || return 1
+  content="$(grep -vE '^[[:space:]]*Pane is dead \(status ' "$file" | awk '
+    NF { if (!s) s = NR; e = NR }
+    { line[NR] = $0 }
+    END { for (i = s; i <= e; i++) print line[i] }
+  ')"
+  rm -f "$file"
+  [ -n "$content" ] || return 1
+  printf '%s\n' "$content"
 }
 
 # cr_configure_exit_capture <session>: arm <session> so its post-exit output is
@@ -208,9 +205,17 @@ cr_attach() {
 cr_attach_and_drain() {
   local session="$1" wait="$2"
   cr_attach "$session" || true
-  if cr_drain_exit_output && [ "$wait" -eq 1 ]; then
+  if cr_drain_exit_output "$session" && [ "$wait" -eq 1 ]; then
     printf 'Weiter mit Enter … ' >&2
-    read -r _ || true
+    # Read the keypress from the controlling terminal, NOT fd 0. In the picker
+    # loop, after `tmux attach` returns over SSH, a read from fd 0 comes back
+    # immediately (no genuine wait) — whereas /dev/tty blocks for a real key.
+    # Fall back to fd 0 only when there is no controlling terminal (piped/tests).
+    if [ -e /dev/tty ]; then
+      read -r _ </dev/tty || true
+    else
+      read -r _ || true
+    fi
   fi
 }
 
