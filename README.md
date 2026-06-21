@@ -200,6 +200,7 @@ These variables let you substitute the real tools in tests or advanced configura
 | `CR_ANCHOR` | `_cr_anchor` | name of the hidden tmux holding session (see `cr_ensure_anchor`, the Keychain anchor) |
 | `CR_ANCHOR_INTERVAL` | `60` | install-time: seconds between the LaunchAgent's self-heal checks (`StartInterval`) |
 | `CR_NEW_DIR` | `~/Projects` | base directory the picker's `＋ neue Session` prompt offers on empty input and resolves a bare project name against (`myproject` → `~/Projects/myproject`) |
+| `CR_LOCALE` | `de_DE.UTF-8` | UTF-8 locale pinned before any tmux server is born so picker/iPad panes handle pasted multibyte text (falls back to `en_US.UTF-8`, then `C.UTF-8`; only a locale `locale -a` lists is used) |
 
 `claude` is resolved from `PATH` at launch time; there is no env seam for it.
 
@@ -220,6 +221,10 @@ Tests live in `tests/`. Fixtures and helper stubs are in `tests/fixtures/` and `
 ### macOS Local Network privacy
 
 macOS attributes LAN access to the *responsible process* — for picker-born sessions that is the tmux server. Homebrew's tmux ships without an `Info.plist`, so macOS treats it as unidentified and silently blocks LAN connections from those sessions (e.g. a `git push` to a host on the LAN fails with "no route to host") while public internet still works, and the permission cannot be granted from the Settings pane. `make sign-tmux` (wrapping `bin/cr-sign-tmux`) rebuilds tmux from source with an embedded `Info.plist` and ad-hoc signs it, turning it into an app macOS *can* grant. After running it: `tmux kill-server` (reloads the patched binary off disk) and approve the one-time macOS prompt. Re-run after `brew upgrade tmux` (Homebrew overwrites the patched binary). `install.sh` never touches tmux itself — it only prints a hint when the installed tmux is unpatched (`cr-sign-tmux --check`, read-only).
+
+### UTF-8 input (locale)
+
+A stripped environment (the SSH forced command, launchd) leaves `LANG`/`LC_*` empty, so a tmux server born there runs on the C/US-ASCII locale. tmux still *renders* UTF-8 (the client sets its utf8 flag), but the ASCII input layer mangles **pasted** multibyte UTF-8 — e.g. `Für` arrives as `F√ºr` and box-drawing as `‚îÄ` (a deterministic decode-as-MacRoman / re-encode-as-UTF-8 corruption). The wrappers fix this themselves: `cr_ensure_utf8_locale` pins a UTF-8 locale before any server is born, so picker- and iPad-born sessions paste correctly out of the box. Override the target with `CR_LOCALE` (default `de_DE.UTF-8`). Caveat: the fix only applies to **newly** born tmux servers — an already-running server keeps its old ASCII birth locale until `tmux kill-server` (when no session is open) reloads it.
 
 ---
 
