@@ -95,6 +95,18 @@ teardown() { cr_teardown; }
   [ -z "$output" ]
 }
 
+@test "cr_drain_exit_output drops the signal-death banner too (Ctrl-C/kill, not just status N)" {
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  d="$(mktemp -d)"
+  export CR_EXIT_DIR="$d"
+  # tmux writes "(signal int, …)" — not "(status N, …)" — when the pane is killed
+  # by a signal (Ctrl-C, kill). The banner is noise either way and must be dropped.
+  printf 'Pane is dead (signal int, Tue Jun 23 10:33:00 2026)\n\n\n' >"$(cr_exit_file sess-1)"
+  run cr_drain_exit_output sess-1
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
 @test "cr_drain_exit_output drains ONLY the named session, never another session's leftover" {
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
   d="$(mktemp -d)"

@@ -137,8 +137,9 @@ cr_exit_buf() {
 }
 
 # cr_drain_exit_output <session>: print the post-exit capture file for <session>
-# (written by its pane-died hook). Drops tmux's own "Pane is dead (status …)"
-# banner and the blank padding capture-pane leaves, then prints what Claude
+# (written by its pane-died hook). Drops tmux's own "Pane is dead (…)" banner
+# (status N on a clean exit, signal int on Ctrl-C/kill) and the blank padding
+# capture-pane leaves, then prints what Claude
 # actually wrote — raw, no header. Session-specific on purpose: it must never
 # surface a *different* (or stale) session's leftover file, and on a plain detach
 # (session still alive, so no capture for it) it correctly shows nothing. It does
@@ -157,7 +158,10 @@ cr_drain_exit_output() {
   # 2>/dev/null: another attached client (or an old pre-fix client) can unlink the
   # file between the [ -f ] check above and this read — swallow grep's "No such
   # file"/"Permission denied" so a lost race yields "nothing to show", not noise.
-  content="$(grep -vE '^[[:space:]]*Pane is dead \(status ' "$file" 2>/dev/null | awk '
+  # Match "Pane is dead (" without pinning the reason: tmux writes "(status N, …)"
+  # on a normal exit but "(signal int, …)" when the pane is killed by a signal
+  # (Ctrl-C, kill) — both are noise, as is any future variant.
+  content="$(grep -vE '^[[:space:]]*Pane is dead \(' "$file" 2>/dev/null | awk '
     NF { if (!s) s = NR; e = NR }
     { line[NR] = $0 }
     END { for (i = s; i <= e; i++) print line[i] }
