@@ -81,9 +81,9 @@ Add this to your shell config (`~/.zshrc`, `~/.bashrc`, …):
 claude() {
   local git_root=$(git rev-parse --show-toplevel 2>/dev/null)
   if [[ -n "$git_root" ]]; then
-    (cd "$git_root" && claude-remote -- --allow-dangerously-skip-permissions --brief "$@")
+    (cd "$git_root" && claude-remote -- "$@")
   else
-    claude-remote -- --allow-dangerously-skip-permissions --brief "$@"
+    claude-remote -- "$@"
   fi
 }
 ```
