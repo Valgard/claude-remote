@@ -421,9 +421,14 @@ cr_sshd_running() {
 # resolve even under a stripped environment (e.g. an SSH forced command, whose PATH
 # is typically just /usr/bin:/bin:/usr/sbin:/sbin). Appends (does not prepend) so an
 # already-present entry keeps priority; only adds dirs that exist and aren't on PATH.
+# Among the *added* dirs the user-local bins come first, so a binary pinned into
+# ~/.local/bin (e.g. a specific native claude) wins over a Homebrew copy of the same
+# tool — matching the user's interactive PATH and keeping the launch path agnostic
+# (a tmux pane inherits the launching client's PATH, so an unstripped Mac shell and a
+# stripped SSH picker must resolve `claude` to the same pinned binary).
 cr_augment_path() {
   local d
-  for d in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin" "$HOME/local/bin"; do
+  for d in "$HOME/.local/bin" "$HOME/local/bin" /opt/homebrew/bin /usr/local/bin; do
     [ -d "$d" ] || continue
     case ":$PATH:" in
       *":$d:"*) ;;
