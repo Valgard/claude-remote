@@ -254,6 +254,27 @@ cr_reattach() {
   cr_attach_and_drain "$1" "$2"
 }
 
+# cr_kill_session <session>: terminate a claude-remote session from the picker.
+# kill-session sends SIGHUP to the claude pane and tears the session down — the
+# remain-on-exit/pane-died capture machinery is irrelevant here (the user is
+# deliberately discarding, not exiting cleanly). Refuses an empty target and the
+# keychain anchor ($CR_ANCHOR): the anchor is already hidden from the menu (so it
+# can't be selected), but the guard is cheap defense-in-depth against ever tearing
+# down the server's Aqua holding session. Drops any stale post-exit capture file
+# for the session (cr_reap_exit_files would eventually clean it, but a kill makes
+# the immediate removal trivial); a capture written by a pane-died race is harmless
+# — the session is gone, so it is never drained, and reap sweeps it. Returns
+# non-zero on a refused/failed kill so the caller can report it.
+cr_kill_session() {
+  local session="$1"
+  [ -n "$session" ] || return 1
+  [ "$session" = "$CR_ANCHOR" ] && return 1
+  # shellcheck disable=SC2086
+  $CR_TMUX kill-session -t "$session" || return 1
+  rm -f "$(cr_exit_file "$session")" 2>/dev/null
+  return 0
+}
+
 # cr_ensure_anchor: if no tmux server is running yet, birth one via a detached
 # "holding" session named $CR_ANCHOR; otherwise do nothing.
 #
@@ -465,12 +486,12 @@ cr_ensure_utf8_locale() {
 # cr_pick_numbered <footnote> <menu-line>...
 # Renders a numbered menu on STDERR, reads one choice from stdin, and echoes a
 # selection TOKEN on stdout: a tmux session name, __NEW__, __QUIT__, __RELOAD__
-# (re-fetch the session list), or __NONE__ (invalid input -> caller redraws).
-# Menu lines are "session<TAB>display".
+# (re-fetch the session list), __KILL__<TAB>session (typing k<n> kills entry n),
+# or __NONE__ (invalid input -> caller redraws). Menu lines are "session<TAB>display".
 cr_pick_numbered() {
   local footnote="$1"
   shift
-  local menu=("$@") i=1 line choice newidx
+  local menu=("$@") i=1 line choice newidx kidx
   {
     echo "Claude-Sessions:"
     for line in "${menu[@]:-}"; do
@@ -481,6 +502,7 @@ cr_pick_numbered() {
     [ -n "$footnote" ] && printf '%s\n' "$footnote"
     printf "  %2d) ＋ neue Session\n" "$i"
     printf "   r) Aktualisieren\n"
+    printf " k<n>) Session beenden\n"
     printf "   q) Beenden\n"
     printf "Auswahl: "
   } >&2
@@ -493,6 +515,17 @@ cr_pick_numbered() {
     q | Q) echo "__QUIT__" ;;
     r | R) echo "__RELOAD__" ;;
     "$newidx") echo "__NEW__" ;;
+    [kK][0-9]*)
+      # k<n>: kill entry n. Emit a compound __KILL__<TAB>session token so the loop
+      # learns both the intent AND the target in one read (the bare tokens above
+      # carry no target). Out-of-range -> __NONE__ (redraw), like a bad number.
+      kidx="${choice#[kK]}"
+      if [ "$kidx" -ge 1 ] 2>/dev/null && [ "$kidx" -le "${#menu[@]}" ]; then
+        printf '__KILL__\t%s\n' "${menu[$((kidx - 1))]%%$'\t'*}"
+      else
+        echo "__NONE__"
+      fi
+      ;;
     *)
       if [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le "${#menu[@]}" ]; then
         printf '%s\n' "${menu[$((choice - 1))]%%$'\t'*}"
@@ -506,26 +539,37 @@ cr_pick_numbered() {
 # cr_pick_fzf <footnote> <menu-line>...
 # Presents the menu via fzf (interactive, uses /dev/tty), and echoes a selection
 # TOKEN on stdout: a tmux session name, __NEW__, __RELOAD__ (Ctrl-R, re-fetch the
-# list), or __QUIT__ (ESC/cancel). fzf shows only the display column (field 2..);
-# the session key is field 1. With --expect=ctrl-r, fzf prints the pressed key on
-# line 1 (empty for a plain Enter) and the selected line on line 2.
+# list), __KILL__<TAB>session (Ctrl-X on the highlighted session), or __QUIT__
+# (ESC/cancel). fzf shows only the display column (field 2..); the session key is
+# field 1. With --expect=ctrl-r,ctrl-x, fzf prints the pressed key on line 1 (empty
+# for a plain Enter) and the selected line on line 2 — so Ctrl-X carries the
+# highlighted target along, exactly like Enter does for attach.
 cr_pick_fzf() {
   local footnote="$1"
   shift
-  local header="claude-remote — Enter: attach · Ctrl-R: aktualisieren · ESC: beenden"
+  local header="claude-remote — Enter: attach · Ctrl-X: beenden · Ctrl-R: aktualisieren · ESC: beenden"
   [ -n "$footnote" ] && header="${header}"$'\n'"${footnote}"
   local lines=()
   [ "$#" -gt 0 ] && lines=("$@")
   lines+=("__NEW__"$'\t'"＋ neue Session")
-  local out key chosen
+  local out key chosen sess
   out="$(printf '%s\n' "${lines[@]}" | fzf --ansi --delimiter=$'\t' --with-nth='2..' \
-    --prompt='Session> ' --header="$header" --reverse --no-multi --expect=ctrl-r)" || true
+    --prompt='Session> ' --header="$header" --reverse --no-multi --expect=ctrl-r,ctrl-x)" || true
   {
     IFS= read -r key
     IFS= read -r chosen
   } <<<"$out"
   if [ "$key" = "ctrl-r" ]; then
     echo "__RELOAD__"
+  elif [ "$key" = "ctrl-x" ]; then
+    # Kill the highlighted session. Guard: ignore when nothing real is highlighted
+    # (empty selection, or the synthetic __NEW__ line when the list is empty) so
+    # Ctrl-X never emits a kill for a non-session entry — redraw instead.
+    sess="${chosen%%$'\t'*}"
+    case "$sess" in
+      "" | __*) echo "__NONE__" ;;
+      *) printf '__KILL__\t%s\n' "$sess" ;;
+    esac
   elif [ -z "$chosen" ]; then
     echo "__QUIT__"
   else

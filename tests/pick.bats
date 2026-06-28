@@ -39,6 +39,17 @@ LIB="${REPO_ROOT}/lib/claude-remote-lib.sh"
   [ "$output" = "__RELOAD__" ]
 }
 
+@test "cr_pick_numbered: k<n> returns __KILL__<TAB>session for entry n" {
+  run bash -c "source '$LIB'; printf 'k2\n' | cr_pick_numbered '' \$'sess-one\tproj one' \$'sess-two\tproj two' 2>/dev/null"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'__KILL__\tsess-two' ]
+}
+
+@test "cr_pick_numbered: k<n> out of range returns __NONE__ (redraw)" {
+  run bash -c "source '$LIB'; printf 'k99\n' | cr_pick_numbered '' \$'sess-one\tproj one' 2>/dev/null"
+  [ "$output" = "__NONE__" ]
+}
+
 # --- fzf path (real fzf interaction is manual; here we stub fzf to test mapping) ---
 
 @test "cr_pick_fzf maps the fzf-selected line to its session key" {
@@ -74,4 +85,33 @@ STUB
   export PATH="$stub:$PATH"
   run bash -c "source '$LIB'; cr_pick_fzf '' \$'sess-one\tproj one' 2>/dev/null"
   [ "$output" = "__RELOAD__" ]
+}
+
+@test "cr_pick_fzf returns __KILL__<TAB>session when the kill key is pressed" {
+  stub="$(mktemp -d)"
+  # --expect reports ctrl-x on line 1, then the highlighted line.
+  cat >"$stub/fzf" <<'STUB'
+#!/bin/bash
+printf 'ctrl-x\n'
+grep -m1 'sess-two' || true
+STUB
+  chmod +x "$stub/fzf"
+  export PATH="$stub:$PATH"
+  run bash -c "source '$LIB'; cr_pick_fzf '' \$'sess-one\tproj one' \$'sess-two\tproj two' 2>/dev/null"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'__KILL__\tsess-two' ]
+}
+
+@test "cr_pick_fzf ignores the kill key on the new-session entry (__NONE__)" {
+  stub="$(mktemp -d)"
+  # ctrl-x while the synthetic __NEW__ line is highlighted must not kill it.
+  cat >"$stub/fzf" <<'STUB'
+#!/bin/bash
+printf 'ctrl-x\n'
+grep -m1 '__NEW__' || true
+STUB
+  chmod +x "$stub/fzf"
+  export PATH="$stub:$PATH"
+  run bash -c "source '$LIB'; cr_pick_fzf '' \$'sess-one\tproj one' 2>/dev/null"
+  [ "$output" = "__NONE__" ]
 }

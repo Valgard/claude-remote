@@ -99,6 +99,19 @@ while true; do
       # output and waits for a keypress so it survives the next full-screen redraw.
       (cd "$dir" && cr_launch "$(cr_session_name "")" 1 1 --)
       ;;
+    __KILL__*)
+      # cr_pick_fzf (Ctrl-X) / cr_pick_numbered (k<n>) emit __KILL__<TAB>session.
+      # The session is the tab-suffix. Confirm before the (destructive) kill — like
+      # the mkdir confirm above, read from fd 0 (the /dev/tty dance is only needed
+      # after `tmux attach`, not after a pick), default No. Loop continues → redraw.
+      session="${selection#*$'\t'}"
+      read -r -p "$(printf 'Session %s beenden? [j/N] ' "$session")" yn || yn=""
+      case "$yn" in
+        j | J | y | Y)
+          cr_kill_session "$session" || printf 'Konnte %s nicht beenden\n' "$session" >&2
+          ;;
+      esac
+      ;;
     *)
       # Re-attach to a running session: arm capture (it may predate this feature
       # or have been started outside claude-remote), attach, drain, wait — same
