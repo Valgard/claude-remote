@@ -82,14 +82,9 @@ cr_launch() {
   [ "${1-}" = "--" ] && shift
   local tmp pid final
   tmp="${name}-tmp-$$"
-  # CR_LOGIN_SHELL=1 (default): launch claude under a login+interactive zsh that
-  # sources ~/.zshrc (full MacBook env), then `exec`s the bare binary so the
-  # process is REPLACED under the same pid — pane_pid == claude pid (abtop join)
-  # and the pane-died capture both stay intact. `command` bypasses the recursive
-  # `claude` shell function (it calls claude-remote). The 'exec …' string is a
-  # single argv element on purpose; SC2016 ($@ inside single quotes) is wanted —
-  # zsh expands it, not us. CR_LOGIN_SHELL=0 keeps the legacy direct exec (tests).
   if [ "${CR_LOGIN_SHELL:-1}" = 1 ]; then
+    # SC2016: the single-quoted '$@' is literal on purpose — zsh expands it in
+    # the pane, not us. SC2086: intentional word-split on $CR_TMUX.
     # shellcheck disable=SC2086,SC2016
     $CR_TMUX new-session -d -s "$tmp" -- zsh -lic 'exec command claude "$@"' cr "$@" || return 1
   else
