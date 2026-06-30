@@ -64,22 +64,38 @@ cr_session_name() {
 }
 
 # cr_launch <name> <attach:0|1> <wait:0|1> -- <claude args...>
-# Creates a detached tmux session running claude directly, so pane_pid == claude pid.
-# `claude` is resolved from PATH by tmux's exec form (no shell involved, so the
-# interactive claude zsh function never enters the picture — equivalent to
-# `command claude`). Renames the session to <name>-<pane_pid>, arms post-exit
-# capture, then either attaches (cr_attach_and_drain, honouring <wait>) or, in
-# no-attach mode, prints the session name. Shared by the wrapper and the picker's
-# new-session path. The attach is NOT exec'd (see cr_attach), so the caller
-# regains control to drain Claude's post-exit output instead of just "[exited]".
+# Creates a detached tmux session running claude, so pane_pid == claude pid.
+# CR_LOGIN_SHELL=1 (default): launches claude under `zsh -lic` so the pane
+# inherits the full ~/.zshrc environment (PATH, secrets, MCP tokens, etc.).
+# The zsh script is `exec command claude "$@"` — `exec` replaces the shell so
+# the pane_pid stays on the claude process (abtop join invariant intact);
+# `command` bypasses the recursive `claude` zsh function. CR_LOGIN_SHELL=0
+# keeps the legacy direct exec form (used by the test harness for hermeticity).
+# Renames the session to <name>-<pane_pid>, arms post-exit capture, then either
+# attaches (cr_attach_and_drain, honouring <wait>) or, in no-attach mode, prints
+# the session name. Shared by the wrapper and the picker's new-session path.
+# The attach is NOT exec'd (see cr_attach), so the caller regains control to
+# drain Claude's post-exit output instead of just "[exited]".
 cr_launch() {
   local name="$1" attach="$2" wait="$3"
   shift 3
   [ "${1-}" = "--" ] && shift
   local tmp pid final
   tmp="${name}-tmp-$$"
-  # shellcheck disable=SC2086
-  $CR_TMUX new-session -d -s "$tmp" -- claude "$@" || return 1
+  # CR_LOGIN_SHELL=1 (default): launch claude under a login+interactive zsh that
+  # sources ~/.zshrc (full MacBook env), then `exec`s the bare binary so the
+  # process is REPLACED under the same pid — pane_pid == claude pid (abtop join)
+  # and the pane-died capture both stay intact. `command` bypasses the recursive
+  # `claude` shell function (it calls claude-remote). The 'exec …' string is a
+  # single argv element on purpose; SC2016 ($@ inside single quotes) is wanted —
+  # zsh expands it, not us. CR_LOGIN_SHELL=0 keeps the legacy direct exec (tests).
+  if [ "${CR_LOGIN_SHELL:-1}" = 1 ]; then
+    # shellcheck disable=SC2086,SC2016
+    $CR_TMUX new-session -d -s "$tmp" -- zsh -lic 'exec command claude "$@"' cr "$@" || return 1
+  else
+    # shellcheck disable=SC2086
+    $CR_TMUX new-session -d -s "$tmp" -- claude "$@" || return 1
+  fi
   # shellcheck disable=SC2086
   pid="$($CR_TMUX display-message -p -t "$tmp" '#{pane_pid}')" || return 1
   if [ -z "$pid" ]; then
