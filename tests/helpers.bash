@@ -7,6 +7,9 @@ cr_setup() {
   CR_SOCKET="cr_test_${BATS_SUITE_TEST_NUMBER}_$$"
   export CR_TMUX="tmux -L ${CR_SOCKET}"
   export CR_ABTOP="${REPO_ROOT}/tests/fixtures/abtop-stub"
+  # Pin the launch seam to direct exec so the suite never sources the real
+  # ~/.zshrc (CR_LOGIN_SHELL=1 would run `zsh -lic` in the pane). Hermetic.
+  export CR_LOGIN_SHELL=0
   # Inject a stub named `claude` ahead of the real one on PATH. The isolated
   # tmux server started below inherits this PATH and resolves `claude` to the stub.
   STUB_BIN="${BATS_TEST_TMPDIR}/bin"
