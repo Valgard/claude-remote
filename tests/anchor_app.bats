@@ -23,16 +23,25 @@ teardown() { cr_teardown; }
 
 @test "cr_anchor_app_needs_build: missing binary needs build" {
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
-  src="$(mktemp)"
-  bin="$(mktemp -u)"
+  src="$(mktemp "${BATS_TEST_TMPDIR}/src.XXXXXX")"
+  bin="$(mktemp -u "${BATS_TEST_TMPDIR}/bin.XXXXXX")"
+  run cr_anchor_app_needs_build "$src" "$bin"
+  [ "$status" -eq 0 ]
+}
+
+@test "cr_anchor_app_needs_build: non-executable binary needs build" {
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  src="$(mktemp "${BATS_TEST_TMPDIR}/src.XXXXXX")"
+  bin="$(mktemp "${BATS_TEST_TMPDIR}/bin.XXXXXX")"  # created without +x
+  touch -t 202001010000 "$src"   # src older, so only the -x check should trigger
   run cr_anchor_app_needs_build "$src" "$bin"
   [ "$status" -eq 0 ]
 }
 
 @test "cr_anchor_app_needs_build: up-to-date binary skips build" {
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
-  src="$(mktemp)"
-  bin="$(mktemp)"
+  src="$(mktemp "${BATS_TEST_TMPDIR}/src.XXXXXX")"
+  bin="$(mktemp "${BATS_TEST_TMPDIR}/bin.XXXXXX")"
   chmod +x "$bin"
   touch -t 202001010000 "$src" # src older than bin
   run cr_anchor_app_needs_build "$src" "$bin"
@@ -41,8 +50,8 @@ teardown() { cr_teardown; }
 
 @test "cr_anchor_app_needs_build: source newer than binary needs build" {
   source "${REPO_ROOT}/lib/claude-remote-lib.sh"
-  src="$(mktemp)"
-  bin="$(mktemp)"
+  src="$(mktemp "${BATS_TEST_TMPDIR}/src.XXXXXX")"
+  bin="$(mktemp "${BATS_TEST_TMPDIR}/bin.XXXXXX")"
   chmod +x "$bin"
   touch -t 202001010000 "$bin" # bin older than src
   run cr_anchor_app_needs_build "$src" "$bin"

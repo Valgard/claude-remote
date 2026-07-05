@@ -39,15 +39,15 @@ if command -v launchctl >/dev/null 2>&1; then
 
   if command -v "${CR_CLANG:-clang}" >/dev/null 2>&1; then
     mkdir -p "${APP_DIR}/Contents/MacOS"
-    cp -f "${HERE}/anchor-app/Info.plist" "${APP_DIR}/Contents/Info.plist"
     if cr_anchor_app_needs_build "$STUB_SRC" "$STUB_BIN"; then
+      cp -f "${HERE}/anchor-app/Info.plist" "${APP_DIR}/Contents/Info.plist"
       "${CR_CLANG:-clang}" -O2 -DCRP_PATH="\"${BIN_DIR}/claude-remote-pick\"" -o "$STUB_BIN" "$STUB_SRC"
       codesign -s - --force "$APP_DIR"
     fi
     AGENT_PROG_A="/usr/bin/open"
     AGENT_PROG_B="$APP_DIR"
   else
-    echo "ℹ️  clang not found — using the script anchor (Local Network stays blocked)."
+    echo "ℹ️  ${CR_CLANG:-clang} not found — using the script anchor (Local Network stays blocked)."
     AGENT_PROG_A="${BIN_DIR}/claude-remote-pick"
     AGENT_PROG_B="--ensure-anchor"
   fi

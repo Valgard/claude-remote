@@ -12,5 +12,7 @@
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Findet Geräte im lokalen Netzwerk (z. B. dein git-/Forgejo-Remote), damit claude-remote-Sessions sie erreichen.</string>
 </dict>
 </plist>
