@@ -32,6 +32,18 @@ if [ "${1:-}" = "--ensure-anchor" ]; then
   exit $?
 fi
 
+# --supervise-anchor: the LaunchServices-launched anchor app execs into this. Birth
+# the anchor, then stay alive as its supervisor so the app remains the responsible
+# process of the tmux server (macOS Local Network grant target) and re-births the
+# server if it ever dies. Intentionally never returns.
+if [ "${1:-}" = "--supervise-anchor" ]; then
+  while true; do
+    cr_ensure_anchor
+    sleep "${CR_ANCHOR_INTERVAL:-60}"
+  done
+  exit 0 # unreachable; mirrors --ensure-anchor, guards against future fall-through
+fi
+
 # Interactive loop: render menu, read a choice, attach (no exec → return here on detach).
 # Uses fzf when available and stdout is a terminal; otherwise a numbered menu.
 # Interactive output goes to a terminal, so colourise (fzf gets --ansi; the numbered
