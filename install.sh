@@ -23,46 +23,37 @@ cr_ensure_line "$TMUX_CONF" 'set -g focus-events on'
 # full-screen TUI; this lets you bring it back to glance at the session name/clock).
 cr_ensure_line "$TMUX_CONF" 'bind-key S set-option status'
 
-# Keychain anchor (macOS). A tmux server first born from the iPad's SSH forced
-# command lands in launchd's Background domain, where Claude Code's login-keychain
-# write (OAuth token refresh) fails with errSecInteractionNotAllowed (-25308). A
-# LaunchAgent loaded in the GUI (Aqua) session runs cr_ensure_anchor at login AND
-# every CR_ANCHOR_INTERVAL seconds: it births a hidden holding session only when no
-# tmux server is running, so the server is born keychain-capable and every later
-# picker session joins it. The periodic tick is self-healing (re-establishes an Aqua
-# server within one interval if it ever dies) and makes rollout seamless: with old
-# sessions still up it no-ops, then takes over automatically once they end — no reboot
-# needed. The plist is rewritten on every run (deterministic content = idempotent);
-# the bootout/bootstrap pair reloads it without erroring on re-run.
+# Native Local Network anchor (macOS): a persistent, ad-hoc-signed .app launched via
+# LaunchServices (open) births the tmux anchor and stays alive as its supervisor, so its
+# Local Network grant covers every tmux child; it also subsumes the keychain anchor.
+# build-once keeps the ad-hoc cdhash (and thus the one-time grant) stable. Degrades to the
+# script anchor (keychain still works; LAN stays blocked) when the compiler is unavailable.
 if command -v launchctl >/dev/null 2>&1; then
   AGENT_LABEL="de.valgard.claude-remote-anchor"
   AGENT_DIR="${HOME}/Library/LaunchAgents"
   AGENT_PLIST="${AGENT_DIR}/${AGENT_LABEL}.plist"
-  AGENT_INTERVAL="${CR_ANCHOR_INTERVAL:-60}" # seconds between self-heal checks
+  AGENT_INTERVAL="${CR_ANCHOR_INTERVAL:-60}"
+  APP_DIR="${HOME}/Applications/ClaudeRemoteAnchor.app"
+  STUB_SRC="${HERE}/anchor-app/cr-anchor-stub.c"
+  STUB_BIN="${APP_DIR}/Contents/MacOS/cr-anchor-stub"
+
+  if command -v "${CR_CLANG:-clang}" >/dev/null 2>&1; then
+    mkdir -p "${APP_DIR}/Contents/MacOS"
+    cp -f "${HERE}/anchor-app/Info.plist" "${APP_DIR}/Contents/Info.plist"
+    if cr_anchor_app_needs_build "$STUB_SRC" "$STUB_BIN"; then
+      "${CR_CLANG:-clang}" -O2 -DCRP_PATH="\"${BIN_DIR}/claude-remote-pick\"" -o "$STUB_BIN" "$STUB_SRC"
+      codesign -s - --force "$APP_DIR"
+    fi
+    AGENT_PROG_A="/usr/bin/open"
+    AGENT_PROG_B="$APP_DIR"
+  else
+    echo "ℹ️  clang not found — using the script anchor (Local Network stays blocked)."
+    AGENT_PROG_A="${BIN_DIR}/claude-remote-pick"
+    AGENT_PROG_B="--ensure-anchor"
+  fi
+
   mkdir -p "$AGENT_DIR"
-  cat >"$AGENT_PLIST" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${AGENT_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${BIN_DIR}/claude-remote-pick</string>
-    <string>--ensure-anchor</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StartInterval</key>
-  <integer>${AGENT_INTERVAL}</integer>
-  <key>LimitLoadToSessionType</key>
-  <string>Aqua</string>
-</dict>
-</plist>
-EOF
-  # Reload idempotently. Both may fail harmlessly when run outside a GUI session
-  # (e.g. over SSH): the plist is on disk and loads at the next GUI login anyway.
+  cr_anchor_plist "$AGENT_LABEL" "$AGENT_PROG_A" "$AGENT_PROG_B" "$AGENT_INTERVAL" >"$AGENT_PLIST"
   launchctl bootout "gui/$(id -u)/${AGENT_LABEL}" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null || true
 fi

@@ -286,6 +286,47 @@ cr_kill_session() {
   return 0
 }
 
+# cr_anchor_plist <label> <prog_a> <prog_b> <interval>
+# Emit the LaunchAgent plist to stdout. prog_a/prog_b are the two ProgramArguments
+# entries: either [/usr/bin/open, <app-path>] (app anchor) or
+# [<claude-remote-pick>, --ensure-anchor] (script anchor / degrade).
+cr_anchor_plist() {
+  local label="$1" prog_a="$2" prog_b="$3" interval="$4"
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${prog_a}</string>
+    <string>${prog_b}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>${interval}</integer>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+</dict>
+</plist>
+EOF
+}
+
+# cr_anchor_app_needs_build <src> <bin>
+# Return 0 (needs build) if <bin> is missing, not executable, or older than <src>.
+# Return 1 (up to date) when <bin> exists, is executable, and is not older than <src>.
+# Used by install.sh to implement build-once semantics: the ad-hoc cdhash (and thus
+# the one-time macOS Local Network grant) stays stable across re-runs of install.sh.
+cr_anchor_app_needs_build() {
+  local src="$1" bin="$2"
+  [ ! -x "$bin" ] && return 0
+  [ "$src" -nt "$bin" ] && return 0
+  return 1
+}
+
 # cr_ensure_anchor: if no tmux server is running yet, birth one via a detached
 # "holding" session named $CR_ANCHOR; otherwise do nothing.
 #
