@@ -29,3 +29,9 @@ teardown() { cr_teardown; }
   run cat "$f"
   [ "$output" = 'setw -g aggressive-resize on' ]
 }
+
+@test "sign-tmux machinery is gone" {
+  [ ! -e "${CR_REPO}/bin/cr-sign-tmux" ]
+  ! grep -q "sign-tmux" "${CR_REPO}/Makefile"
+  ! grep -q "cr-sign-tmux" "${CR_REPO}/install.sh"
+}
