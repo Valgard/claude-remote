@@ -10,7 +10,7 @@ See the full design rationale: [docs/specs/2026-06-15-claude-remote-design.md](d
 
 `claude-remote` launches Claude Code inside a named tmux session so that any SSH client on the same network can attach, detach, and resume the session without interrupting it. A companion picker (`claude-remote-pick`) lists all running Claude sessions (enriched with project name, status, context %, and model via `abtop`) and lets you attach to one — locally or over SSH.
 
-The only code we own is two stateless shell scripts (plus `cr-sign-tmux`, a one-off macOS maintenance helper). Everything else is handled by existing infrastructure:
+The only code we own is two stateless shell scripts, a shared library, and the anchor app (`anchor-app/` — a tiny C stub + `Info.plist`). Everything else is handled by existing infrastructure:
 
 | Concern | Tool | Role |
 |---|---|---|
@@ -57,12 +57,12 @@ cd ~/tools/claude-remote
 What it does:
 
 1. Creates `~/.local/bin/` if missing.
-2. Symlinks `bin/claude-remote`, `bin/claude-remote-pick`, and `bin/cr-sign-tmux` into `~/.local/bin/`.
+2. Symlinks `bin/claude-remote` and `bin/claude-remote-pick` into `~/.local/bin/`, and builds + installs `ClaudeRemoteAnchor.app` into `~/Applications/`.
 3. Appends four tmux options to `~/.tmux.conf` if not already present:
    - `setw -g aggressive-resize on` and `set -g window-size latest` — size the window to the most recently active client, so the Mac is not permanently shrunk to a smaller iPad screen while both are attached (it resizes back as soon as the Mac is active again).
    - `set -g focus-events on` — forwards the terminal's focus in/out events to Claude Code, which silences its startup warning about missing focus events when it runs inside tmux.
    - `bind-key S set-option status` — `Prefix+S` toggles the status line. `claude-remote` hides the status line per session (Claude's full-screen TUI uses the whole height); this lets you bring it back to glance at the session name or clock.
-4. Installs a per-user `LaunchAgent` (`~/Library/LaunchAgents/de.valgard.claude-remote-anchor.plist`, loaded only in the GUI/`Aqua` session). At login **and every `CR_ANCHOR_INTERVAL` seconds** (default 60) it runs `cr_ensure_anchor`, which starts a hidden tmux holding session **only when no tmux server is running** — otherwise it does nothing. This keeps the tmux server anchored in a Keychain-capable launchd domain. Without it, the **first** session started over SSH from the iPad would birth the server in the `Background` domain, where Claude Code's login-Keychain write (OAuth token refresh) fails with `errSecInteractionNotAllowed (-25308)`. The periodic check is self-healing (re-establishes an `Aqua` server within one interval if it ever dies) and makes the agent safe to load at any time: with sessions already running it no-ops, then takes over automatically once they end — no reboot needed. Only meaningful while you are logged into the Mac's GUI (the Keychain is unreachable otherwise anyway).
+4. Installs a per-user `LaunchAgent` (`~/Library/LaunchAgents/de.valgard.claude-remote-anchor.plist`, loaded only in the GUI/`Aqua` session). At login **and every `CR_ANCHOR_INTERVAL` seconds** (default 60) it launches `~/Applications/ClaudeRemoteAnchor.app` via `open`. The app's stub execs `claude-remote-pick --supervise-anchor`, which starts a hidden tmux holding session **only when no tmux server is running** — otherwise it does nothing — and then stays alive as a supervisor. This keeps the tmux server anchored in a Keychain-capable (`Aqua`) launchd domain. Without it, the **first** session started over SSH from the iPad would birth the server in the `Background` domain, where Claude Code's login-Keychain write (OAuth token refresh) fails with `errSecInteractionNotAllowed (-25308)`. The periodic launch is self-healing (re-establishes an `Aqua` server within one interval if it ever dies) and makes the agent safe to load at any time: with sessions already running it no-ops, then takes over automatically once they end — no reboot needed. Only meaningful while you are logged into the Mac's GUI (the Keychain is unreachable otherwise anyway).
 5. Prints setup instructions (see below).
 
 Make sure `~/.local/bin` is in your `PATH`.
@@ -216,22 +216,21 @@ make test       # run bats test suite
 make lint       # shellcheck all shell files
 make fmt        # format with shfmt (writes in place)
 make fmt-check  # check formatting without writing
-make sign-tmux  # rebuild + ad-hoc sign tmux for macOS Local Network privacy (see below)
 ```
 
 Tests live in `tests/`. Fixtures and helper stubs are in `tests/fixtures/` and `tests/helpers.bash`.
 
 ### macOS Local Network privacy
 
-macOS attributes LAN access to the *responsible process* — for picker-born sessions that is the tmux server. Homebrew's tmux ships without an `Info.plist`, so macOS treats it as unidentified and silently blocks LAN connections from those sessions (e.g. a `git push` to a host on the LAN fails with "no route to host") while public internet still works, and the permission cannot be granted from the Settings pane. `make sign-tmux` (wrapping `bin/cr-sign-tmux`) rebuilds tmux from source with an embedded `Info.plist` and ad-hoc signs it, turning it into an app macOS *can* grant. After running it: `tmux kill-server` (reloads the patched binary off disk) and approve the one-time macOS prompt. Re-run after `brew upgrade tmux` (Homebrew overwrites the patched binary). `install.sh` never touches tmux itself — it only prints a hint when the installed tmux is unpatched (`cr-sign-tmux --check`, read-only).
+macOS attributes LAN access to the *responsible process* — for claude-remote that is the tmux server. A daemonized tmux is never a live LaunchServices-tracked app, so it can never be granted the Local Network permission (embedding an `Info.plist` in the tmux binary — `sign-tmux` — was a dead end). Instead, `install.sh` builds and ad-hoc-signs `~/Applications/ClaudeRemoteAnchor.app` — a tiny stub that `exec`s `claude-remote-pick --supervise-anchor` — and the anchor LaunchAgent launches it via `open`. Because the app is a live, grantable responsible process that births and supervises the tmux server, a one-time "Allow" on the macOS Local Network prompt covers every session's children (git/curl/tea/uv). The grant lives on the app's bundle identity (ad-hoc cdhash, kept stable by build-once), so it survives `brew upgrade tmux` and reboots. Activation needs a one-time anchor restart — re-login or `tmux kill-server`.
 
-**Known issue — when the grant prompt never appears.** On some setups the one-time Local Network prompt never fires after `sign-tmux`, and tmux never shows up under *System Settings → Privacy & Security → Local Network* — so the permission can't be granted and LAN access stays blocked despite the embedded `Info.plist` (suspected: the ad-hoc signature carries no stable TeamID, and/or the server is born outside a registrable GUI-app context via the LaunchAgent / an SSH forced command). Apple-signed binaries are *exempt* from Local Network Privacy regardless of the responsible process, so for the common case — pushing git to a self-hosted remote on the LAN — route git over SSH instead of HTTP. `ssh` (the Apple-signed `/usr/bin/ssh`) needs no `kill-server` and preserves running sessions:
+git also works independently via the SSH `insteadOf` rule (no `kill-server` needed, sessions are preserved):
 
 ```bash
 git config --global url."ssh://git@<host>:<ssh-port>/".insteadOf "http://<host>:<http-port>/"
 ```
 
-This rewrites matching HTTP remotes to SSH transparently, for all repos. To confirm the cause, `nc -z <host> <port>` (also Apple-signed, exempt) succeeds from a session where Homebrew `curl`/`git` report `no route to host` — a quick way to tell it's Local Network Privacy, not the network.
+To confirm a block is Local Network Privacy rather than the network: `nc -z <host> <port>` (Apple-signed, exempt) succeeds from a session where Homebrew `curl`/`git` report `no route to host`.
 
 ### UTF-8 input (locale)
 
