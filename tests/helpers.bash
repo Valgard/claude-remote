@@ -1,6 +1,7 @@
 # Shared bats helpers. Source from each .bats file: `load helpers`.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
+export CR_REPO="$REPO_ROOT"
 
 cr_setup() {
   # Isolated tmux server — never touches the user's real sessions.
