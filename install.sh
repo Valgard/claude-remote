@@ -25,8 +25,11 @@ cr_ensure_line "$TMUX_CONF" 'bind-key S set-option status'
 # Native Local Network anchor (macOS): a persistent, ad-hoc-signed .app launched via
 # LaunchServices (open) births the tmux anchor and stays alive as its supervisor, so its
 # Local Network grant covers every tmux child; it also subsumes the keychain anchor.
-# build-once keeps the ad-hoc cdhash (and thus the one-time grant) stable. Degrades to the
-# script anchor (keychain still works; LAN stays blocked) when the compiler is unavailable.
+# build-once gates only the expensive clang compile (keeps the ad-hoc cdhash stable so
+# the one-time grant persists); the Info.plist copy and ad-hoc re-sign run every install
+# (deterministic cdhash → grant survives; self-heals a prior codesign failure). Degrades
+# to the script anchor (keychain still works; LAN stays blocked) when the compiler is
+# unavailable.
 if command -v launchctl >/dev/null 2>&1; then
   AGENT_LABEL="de.valgard.claude-remote-anchor"
   AGENT_DIR="${HOME}/Library/LaunchAgents"
@@ -38,11 +41,11 @@ if command -v launchctl >/dev/null 2>&1; then
 
   if command -v "${CR_CLANG:-clang}" >/dev/null 2>&1; then
     mkdir -p "${APP_DIR}/Contents/MacOS"
+    cp -f "${HERE}/anchor-app/Info.plist" "${APP_DIR}/Contents/Info.plist"
     if cr_anchor_app_needs_build "$STUB_SRC" "$STUB_BIN"; then
-      cp -f "${HERE}/anchor-app/Info.plist" "${APP_DIR}/Contents/Info.plist"
       "${CR_CLANG:-clang}" -O2 -DCRP_PATH="\"${BIN_DIR}/claude-remote-pick\"" -o "$STUB_BIN" "$STUB_SRC"
-      codesign -s - --force "$APP_DIR"
     fi
+    codesign -s - --force "$APP_DIR"
     AGENT_PROG_A="/usr/bin/open"
     AGENT_PROG_B="$APP_DIR"
   else
