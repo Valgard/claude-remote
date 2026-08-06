@@ -30,6 +30,25 @@ teardown() { cr_teardown; }
   [ "$output" = 'setw -g aggressive-resize on' ]
 }
 
+@test "cr_ensure_line refuses an empty line instead of appending blanks" {
+  f="$(mktemp)"
+  printf 'setw -g aggressive-resize on\n' >"$f"
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  # A caller whose $(…) failed passes "" — appending that would add one blank
+  # line per install run, forever, and never match on the next check.
+  run cr_ensure_line "$f" ""
+  [ "$status" -ne 0 ]
+  [ "$(wc -l <"$f")" -eq 1 ]
+}
+
+@test "install.sh gates the ctrl-z binding on cr_tmux_ctrl_z_state" {
+  # Not a grep for the function name — install.sh's comments mention it too, so
+  # that would pass with the real call deleted. Check the executable line.
+  run grep -vE '^[[:space:]]*#' "${CR_REPO}/install.sh"
+  echo "$output" | grep -q 'cr_tmux_ctrl_z_state'
+  echo "$output" | grep -q 'cr_ensure_line "$TMUX_CONF" "$CTRL_Z_LINE"'
+}
+
 @test "sign-tmux machinery is gone" {
   [ ! -e "${CR_REPO}/bin/cr-sign-tmux" ]
   ! grep -q "sign-tmux" "${CR_REPO}/Makefile"

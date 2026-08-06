@@ -474,13 +474,95 @@ cr_join() {
 # Append <line> to <file> only if not already present, guaranteeing it lands on
 # its own line: if the file exists, is non-empty, and lacks a trailing newline,
 # a newline is added first (otherwise the new line would merge onto the last one).
+# Refuses an empty <line>: a caller whose command substitution failed would
+# otherwise append a blank line on every run, unnoticed and without bound (a
+# failing `$(…)` in argument position does not trip the caller's `set -e`).
 cr_ensure_line() {
   local file="$1" line="$2"
+  if [ -z "$line" ]; then
+    echo "cr_ensure_line: refusing to append an empty line to ${file}" >&2
+    return 1
+  fi
   [ -f "$file" ] && grep -qF -- "$line" "$file" && return 0
   if [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ]; then
     printf '\n' >>"$file"
   fi
   printf '%s\n' "$line" >>"$file"
+}
+
+# --- Ctrl+Z containment -------------------------------------------------------
+# Claude runs as the pane process itself (pane_pid == claude pid — the join
+# invariant), so there is NO shell between it and tmux, and the pane's process
+# group is orphaned: its parent, the tmux server, lives in another session.
+#
+# Observed 2026-08-06: after a stray Ctrl+Z the session is unusable while the
+# process is still alive and NOT stopped. Keystrokes are echoed by the tty driver
+# but never reach the TUI, and `fg` has no shell to be typed into — recovery is
+# `claude-remote -- --resume`, nothing else. The mechanism is most likely the
+# suspend handshake failing in an orphaned process group (a stop signal to such a
+# group is discarded, so no SIGCONT follows and nothing restores raw mode); treat
+# the observation as the fact and that as the best available explanation.
+#
+# Rebinding inside Claude does not help: A/B-tested against Claude Code 2.1.223
+# on an isolated tmux socket (2026-08-06), a keybindings.json entry for ctrl+z
+# never fires — 0x1A is consumed before the configurable key map is consulted.
+# So tmux, one layer below, has to eat the key before it reaches the pane PTY.
+
+# cr_tmux_claude_pane_cond -> the tmux format that is true in a pane whose
+# foreground process image is named like Claude. It rides on the same property
+# the abtop join needs: cr_launch's inner `exec` leaves `claude` as the pane
+# process, so pane_current_command is `claude` — had we wrapped it in a shell,
+# this would read `zsh` and the condition would be blind.
+#
+# Two limits follow from tmux resolving that name from the process *image*
+# (symlinks are followed, argv[0] ignored — see tests/ctrl_z.bats):
+#   - a `#!` wrapper named claude reports its interpreter, so an npm/node or
+#     shim-based install is NOT covered and Ctrl+Z stays lethal there;
+#   - the glob is deliberately loose (a renamed or suffixed binary still counts),
+#     so any command containing "claude" loses Ctrl+Z as well.
+# It also keys on the command, not on how the pane was launched: where you did
+# start claude from a shell, Ctrl+Z/fg would have worked and this takes it away.
+cr_tmux_claude_pane_cond() {
+  printf '%s\n' '#{m:*claude*,#{pane_current_command}}'
+}
+
+# cr_tmux_ctrl_z_line -> the ~/.tmux.conf line installing that key binding.
+# Emitted as ONE line because that is the unit cr_ensure_line both appends and
+# checks for: `grep -F` reads a newline in the pattern as a pattern separator, so
+# a multi-line form could never be checked as a whole. The conditional keeps
+# Ctrl+Z as ordinary job control in every non-Claude pane; `display-message -d`
+# needs tmux >= 3.2.
+cr_tmux_ctrl_z_line() {
+  printf '%s\n' "bind -n C-z if -F '$(cr_tmux_claude_pane_cond)' 'display-message -d 1500 \"Ctrl+Z ist in Claude Code deaktiviert (Detach: Prefix d)\"' 'send-keys C-z'"
+}
+
+# cr_tmux_ctrl_z_state <conf> -> ours | foreign | absent
+# Decides what install.sh may do with a tmux config, by looking only at *active*
+# root-table C-z bindings — a commented-out line, an `unbind -n C-z` (which
+# contains "bind -n C-z" literally) or the string inside some option value are
+# none of them a binding, and a plain substring check read all three as "already
+# installed", silently skipping the install. `bind-key` is matched as well as
+# `bind`: it is the spelling tmux itself prints and the one install.sh uses for
+# the status toggle, so a user's own binding is at least as likely to be written
+# that way — and going unnoticed there means appending ours below it, which
+# silently wins (tmux applies the file in order, last binding for a key stands).
+# `ours` is decided by the presence of cr_tmux_claude_pane_cond, which also
+# recognises the hand-written multi-line form of the very same binding.
+cr_tmux_ctrl_z_state() {
+  local file="$1" binds
+  [ -f "$file" ] || {
+    printf 'absent\n'
+    return 0
+  }
+  binds="$(grep -E '^[[:space:]]*bind(-key)?[[:space:]].*(-n|-T[[:space:]]+root)[[:space:]]+C-z([[:space:]]|$)' "$file")" || {
+    printf 'absent\n'
+    return 0
+  }
+  if printf '%s\n' "$binds" | grep -qF -- "$(cr_tmux_claude_pane_cond)"; then
+    printf 'ours\n'
+  else
+    printf 'foreign\n'
+  fi
 }
 
 # cr_sshd_running -> 0 if something is listening on localhost:${CR_SSH_PORT} (sshd),

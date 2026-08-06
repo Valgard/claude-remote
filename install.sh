@@ -21,6 +21,33 @@ cr_ensure_line "$TMUX_CONF" 'set -g focus-events on'
 # Prefix+S toggles the status line (claude-remote hides it per session for Claude's
 # full-screen TUI; this lets you bring it back to glance at the session name/clock).
 cr_ensure_line "$TMUX_CONF" 'bind-key S set-option status'
+# Swallow Ctrl+Z in Claude panes (see cr_tmux_ctrl_z_line): with no shell parent
+# there is no way back from a suspend, and Claude cannot rebind the key itself.
+# cr_tmux_ctrl_z_state decides — never overwrite a C-z binding the user wrote,
+# and say so rather than leaving them to believe they are covered.
+case "$(cr_tmux_ctrl_z_state "$TMUX_CONF")" in
+  ours) ;; # already installed (or hand-written in the multi-line form)
+  foreign)
+    echo "ℹ️  Eigene C-z-Bindung in ${TMUX_CONF} gefunden — claude-remote lässt sie unverändert."
+    echo "    Der Ctrl+Z-Schutz für Claude-Panes ist damit NICHT aktiv."
+    ;;
+  *)
+    # Bare assignment, not a substitution in argument position: only this form
+    # lets `set -e` catch a failing cr_tmux_ctrl_z_line (otherwise the empty
+    # result would be appended silently, once per install run).
+    CTRL_Z_LINE="$(cr_tmux_ctrl_z_line)"
+    cr_ensure_line "$TMUX_CONF" "$CTRL_Z_LINE"
+    # tmux reads its config only when the server is born, and this project keeps
+    # one server alive for weeks via the anchor LaunchAgent — so without this
+    # hint the user would believe the net is up while the running server has
+    # never seen the binding.
+    # shellcheck disable=SC2086
+    if $CR_TMUX list-sessions >/dev/null 2>&1; then
+      echo "ℹ️  tmux läuft bereits — die neue Zeile greift dort erst nach:"
+      echo "    tmux source-file ${TMUX_CONF}   (Sessions bleiben erhalten)"
+    fi
+    ;;
+esac
 
 # Native Local Network anchor (macOS): a persistent, ad-hoc-signed .app launched via
 # LaunchServices (open) births the tmux anchor and stays alive as its supervisor, so its

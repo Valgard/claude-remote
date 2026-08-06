@@ -4,9 +4,12 @@ REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 export CR_REPO="$REPO_ROOT"
 
 cr_setup() {
-  # Isolated tmux server — never touches the user's real sessions.
+  # Isolated tmux server — never touches the user's real sessions. `-L` isolates
+  # the *sessions*, `-f /dev/null` the *config*: without it every test server
+  # sources the developer's ~/.tmux.conf, so results depend on the host machine
+  # and an assertion can pass on the user's own settings instead of ours.
   CR_SOCKET="cr_test_${BATS_SUITE_TEST_NUMBER}_$$"
-  export CR_TMUX="tmux -L ${CR_SOCKET}"
+  export CR_TMUX="tmux -f /dev/null -L ${CR_SOCKET}"
   export CR_ABTOP="${REPO_ROOT}/tests/fixtures/abtop-stub"
   # Pin the launch seam to direct exec so the suite never sources the real
   # ~/.zshrc (CR_LOGIN_SHELL=1 would run `zsh -lic` in the pane). Hermetic.

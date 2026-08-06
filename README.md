@@ -28,7 +28,7 @@ No long-running daemon of our own. We start nothing that does not already exist.
 
 **Runtime:**
 
-- [tmux](https://github.com/tmux/tmux) `>= 3.0`
+- [tmux](https://github.com/tmux/tmux) `>= 3.2` (for `display-message -d` in the Ctrl+Z binding; everything else works from 3.0)
 - [jq](https://jqlang.github.io/jq/)
 - abtop (Claude Code session metadata; the picker falls back gracefully if unavailable)
 
@@ -58,10 +58,14 @@ What it does:
 
 1. Creates `~/.local/bin/` if missing.
 2. Symlinks `bin/claude-remote` and `bin/claude-remote-pick` into `~/.local/bin/`, and builds + installs `ClaudeRemoteAnchor.app` into `~/Applications/`.
-3. Appends four tmux options to `~/.tmux.conf` if not already present:
+3. Appends five tmux options to `~/.tmux.conf` if not already present:
    - `setw -g aggressive-resize on` and `set -g window-size latest` — size the window to the most recently active client, so the Mac is not permanently shrunk to a smaller iPad screen while both are attached (it resizes back as soon as the Mac is active again).
    - `set -g focus-events on` — forwards the terminal's focus in/out events to Claude Code, which silences its startup warning about missing focus events when it runs inside tmux.
    - `bind-key S set-option status` — `Prefix+S` toggles the status line. `claude-remote` hides the status line per session (Claude's full-screen TUI uses the whole height); this lets you bring it back to glance at the session name or clock.
+   - `bind -n C-z …` — swallows **Ctrl+Z in Claude panes**. Claude runs as the pane process itself, with no shell in between, so a stray Ctrl+Z has no job-control parent to return from: `fg` is typed into nowhere, the TUI stops responding, and the session is only recoverable by restarting it (`claude-remote -- --resume`). Claude cannot rebind the key itself (it consumes `0x1A` before its own key map), so tmux intercepts it one layer below. Conditional on `pane_current_command`, so Ctrl+Z stays ordinary job control in every other pane. Three things worth knowing:
+     - **Your own C-z binding wins.** If the config already contains an active root-table `C-z` binding that is not ours (`bind` or `bind-key`, `-n` or `-T root`), the installer leaves it alone and says so — the Ctrl+Z protection is then *not* installed. A commented-out line or an `unbind -n C-z` does not count as a binding, so those do not block the install.
+     - **A running tmux server does not pick it up.** tmux reads its config only when the server is born, and this setup keeps one server alive for weeks (see the anchor below). The installer points this out; `tmux source-file ~/.tmux.conf` applies it without losing sessions.
+     - **Only a native `claude` binary is covered.** tmux resolves `pane_current_command` from the process image, so a `#!` wrapper — an npm/node install, a version-manager shim — reports `node` and the binding does not match it.
 4. Installs a per-user `LaunchAgent` (`~/Library/LaunchAgents/de.valgard.claude-remote-anchor.plist`, loaded only in the GUI/`Aqua` session). At login **and every `CR_ANCHOR_INTERVAL` seconds** (default 60) it launches `~/Applications/ClaudeRemoteAnchor.app` via `open`. The app's stub execs `claude-remote-pick --supervise-anchor`, which starts a hidden tmux holding session **only when no tmux server is running** — otherwise it does nothing — and then stays alive as a supervisor. This keeps the tmux server anchored in a Keychain-capable (`Aqua`) launchd domain. Without it, the **first** session started over SSH from the iPad would birth the server in the `Background` domain, where Claude Code's login-Keychain write (OAuth token refresh) fails with `errSecInteractionNotAllowed (-25308)`. The periodic launch is self-healing (re-establishes an `Aqua` server within one interval if it ever dies) and makes the agent safe to load at any time: with sessions already running it no-ops, then takes over automatically once they end — no reboot needed. Only meaningful while you are logged into the Mac's GUI (the Keychain is unreachable otherwise anyway).
 5. Prints setup instructions (see below).
 
