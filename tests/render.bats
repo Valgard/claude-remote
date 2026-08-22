@@ -97,3 +97,39 @@ LIB="${REPO_ROOT}/lib/claude-remote-lib.sh"
   # the attach key is never truncated
   [ "${lines[0]%%$'\t'*}" = "x-1" ]
 }
+
+# Column alignment is measured on rendered COLUMNS, not bytes. Both cases below
+# passed while the implementation counted bytes, because their names were pure
+# ASCII and short enough never to be truncated.
+@test "cr_format_rows keeps ctx% aligned when one name is truncated" {
+  long="abcdefghijklmnopqrstuvwxyz-0123"   # >24 -> gets the 3-byte ellipsis
+  joined="$(printf 'S\ta-20397\t20397\tshort\tExecuting\t10\topus\tt\nS\tb-64023\t64023\t%s\tExecuting\t20\topus\tt\nN\t0\n' "$long")"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
+  a="${lines[0]#*$'\t'}"; b="${lines[1]#*$'\t'}"
+  pa="${a%%"%"*}"; pb="${b%%"%"*}"
+  [ "${#pa}" -eq "${#pb}" ]
+}
+
+@test "cr_format_rows keeps ctx% aligned for a multibyte name" {
+  joined="$(printf 'S\ta-20397\t20397\tabcdefghij\tExecuting\t10\topus\tt\nS\tb-64023\t64023\tÄÖÜßäöüßäö\tExecuting\t20\topus\tt\nN\t0\n')"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
+  a="${lines[0]#*$'\t'}"; b="${lines[1]#*$'\t'}"
+  pa="${a%%"%"*}"; pb="${b%%"%"*}"
+  [ "${#pa}" -eq "${#pb}" ]
+}
+
+@test "cr_format_rows truncates on characters, so the output stays valid UTF-8" {
+  joined="$(printf 'S\tx-1\t1\tGrößenänderung-Ümläute-viel-zu-lang\tExecuting\t10\topus\tt\nN\t0\n')"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | iconv -f UTF-8 -t UTF-8 >/dev/null
+}
+
+@test "cr_format_rows (CR_COLOR=1) aligns ctx% too, ignoring the escape codes" {
+  long="abcdefghijklmnopqrstuvwxyz-0123"
+  joined="$(printf 'S\ta-20397\t20397\tshort\tExecuting\t10\topus\tt\nS\tb-64023\t64023\t%s\tExecuting\t20\topus\tt\nN\t0\n' "$long")"
+  run bash -c "source '$LIB'; export CR_COLOR=1; printf '%s\n' \"\$1\" | cr_format_rows | sed \$'s/\033\\[[0-9;]*m//g'" _ "$joined"
+  a="${lines[0]#*$'\t'}"; b="${lines[1]#*$'\t'}"
+  pa="${a%%"%"*}"; pb="${b%%"%"*}"
+  [ "${#pa}" -eq "${#pb}" ]
+}

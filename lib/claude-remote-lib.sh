@@ -7,7 +7,7 @@
 : "${CR_SSH_PORT:=22}"
 : "${CR_ANCHOR:=_cr_anchor}"
 : "${CR_NEW_DIR:=~/Projects}"
-: "${CR_PROJECTS_DIR:=${HOME}/.claude/projects}"
+: "${CR_PROJECTS_DIR:=${HOME:-~}/.claude/projects}"
 : "${CR_TAC:=tac}"
 
 # (functions added by later tasks)
@@ -356,10 +356,11 @@ cr_ensure_anchor() {
 # cr_reverse_lines <file>: emit the file's lines last-to-first.
 # Prefers GNU tac, falls back to macOS' BSD `tail -r` addressed by ABSOLUTE path —
 # a bare `tail` here may well be GNU coreutils from Homebrew, which has no -r.
-# Branching on availability rather than writing `tac "$f" || /usr/bin/tail -r "$f"`
-# is load-bearing: our reader stops at the first hit, which kills the producer with
-# SIGPIPE (exit 141), and an exit-status fallback would take that for a failure and
-# run the second tool too — emitting the content twice.
+# Branch on availability rather than writing `tac "$f" || /usr/bin/tail -r "$f"`: our
+# reader stops early, which kills the producer with SIGPIPE (exit 141), and an
+# exit-status fallback reads that as failure and spawns the second tool on every large
+# read. (It does not duplicate output — the consumer has closed the pipe by then, so
+# the late producer dies of SIGPIPE itself; the cost is the wasted spawn.)
 cr_reverse_lines() {
   if command -v "$CR_TAC" >/dev/null 2>&1; then
     "$CR_TAC" "$1"
@@ -370,36 +371,61 @@ cr_reverse_lines() {
 
 # cr_custom_title <transcript.jsonl> -> the session's /rename title ("" if never set).
 # Claude Code records /rename as a {"type":"custom-title","customTitle":…} line and
-# re-appends it on *every* turn, so the LAST occurrence is the current title — hence
-# reading backwards and stopping at the first hit, which keeps the cost independent
-# of the transcript size (these files reach hundreds of MB). The grep is a cheap
-# byte-level prefilter; jq does the authoritative parse of the one line it survives.
+# re-appends the *current* title periodically (median 8 times per transcript), so the
+# LAST occurrence is the live one — hence reading backwards and stopping early, which
+# keeps a hit O(1) rather than O(file size); these transcripts reach hundreds of MB.
+# A miss still scans the whole file, since grep can only stop on a match.
+#
+# Why -m2 and not -m1: a transcript being appended to right now ends mid-line, and
+# both reversers treat the final newline as a *separator*, so that fragment is glued
+# onto the front of the previous line. If the title happens to sit there, the reversed
+# first hit is unparsable and -m1 would report "no title" for a session that has one.
+# The second candidate covers it, and measurably at no risk: across every local
+# transcript with two or more entries, the last and second-to-last are identical
+# (52 of 52) — the value only changes on a fresh /rename.
+#
+# jq must therefore be fault-tolerant per line: plain `jq` aborts the whole stream on
+# the first parse error, so a torn line would discard the good candidate behind it.
+# -R + fromjson? skips unparsable lines instead, and `.customTitle // empty` skips a
+# line that merely *contains* the marker in a nested object; head -1 takes the newest
+# survivor. grep stays a cheap byte-level prefilter; jq does the authoritative parse.
 # Tabs/newlines inside a title are flattened to spaces so the TSV pipeline downstream
 # cannot be torn apart by a field's content.
 cr_custom_title() {
   local f="$1"
   [ -n "$f" ] && [ -f "$f" ] || return 0
   cr_reverse_lines "$f" 2>/dev/null |
-    grep -m1 '"type":"custom-title"' 2>/dev/null |
-    jq -r 'if type == "object" then ((.customTitle // "") | gsub("[\\t\\n\\r]"; " ")) else "" end' 2>/dev/null
+    grep -m2 '"type":"custom-title"' |
+    jq -Rr 'fromjson? | select(type == "object") | (.customTitle // empty) | gsub("[\\t\\n\\r]"; " ")' 2>/dev/null |
+    head -1
   return 0
 }
 
 # cr_session_file <session_id> -> path of that session's transcript ("" if not found).
-# Claude Code stores it as $CR_PROJECTS_DIR/<encoded-cwd>/<session-id>.jsonl, but the
-# encoding is not reproducible from abtop's cwd: a session that moved into a worktree
-# keeps the transcript under the directory it *started* in. So probe the project dirs
-# instead of deriving a path — one stat per dir, far cheaper than a recursive find
-# over the tens of thousands of transcripts these directories accumulate.
+# Claude Code stores it as $CR_PROJECTS_DIR/<encoded-cwd>/<session-id>.jsonl. The
+# encoding itself is trivial (/ and . become -), but the cwd it encodes is the one the
+# session STARTED in, while abtop reports the live cwd — a session that moved into a
+# worktree keeps its transcript under the parent repo's dir. So probe the project dirs
+# rather than derive a path: one stat per dir, against seconds for a recursive find
+# over the ~10^5 transcripts these directories accumulate.
+#
+# Renamed or copied project dirs leave the same session id in several places (~1200
+# such duplicates locally), so take the most recently written one rather than whatever
+# the glob happens to yield first — an alphabetically earlier `…-sage/` copy would
+# otherwise shadow the live `…-sagekit/` transcript and display a stale title.
 cr_session_file() {
-  local sid="$1" d
+  local sid="$1" d f t newest="" newest_t=0
   [ -n "$sid" ] || return 0
   for d in "${CR_PROJECTS_DIR}"/*/; do
-    if [ -f "${d}${sid}.jsonl" ]; then
-      printf '%s\n' "${d}${sid}.jsonl"
-      return 0
+    f="${d}${sid}.jsonl"
+    [ -f "$f" ] || continue
+    t="$(command stat -c %Y "$f" 2>/dev/null || command stat -f %m "$f" 2>/dev/null)" || continue
+    if [ -z "$newest" ] || [ "$t" -gt "$newest_t" ]; then
+      newest="$f"
+      newest_t="$t"
     fi
   done
+  [ -n "$newest" ] && printf '%s\n' "$newest"
   return 0
 }
 
@@ -413,7 +439,11 @@ cr_resolve_titles() {
   while IFS= read -r line; do
     case "$line" in
       S$'\t'*)
-        sid="$(printf '%s\n' "$line" | cut -f9)"
+        # session_id is the row's last field (pinned by a test on cr_abtop_sessions),
+        # so strip the leading fields instead of forking cut per row. NOT `IFS=$'\t' read`:
+        # tab is POSIX IFS whitespace, so bash collapses runs and drops empty fields — a
+        # session without a project_name would silently shift every later column.
+        sid="${line##*$'\t'}"
         printf '%s\t%s\n' "$line" "$(cr_custom_title "$(cr_session_file "$sid")")"
         ;;
       *) printf '%s\n' "$line" ;;
@@ -473,43 +503,63 @@ cr_format_rows() {
       if (s == "Idle") return "○"
       return "·"
     }
+    function statuscolor(s) {
+      if (s == "Executing" || s == "Thinking") return "\033[32m"
+      if (s == "Waiting") return "\033[33m"
+      return ""
+    }
+    function ctxcolor(c) {
+      if (c < 50) return "\033[32m"
+      if (c < 80) return "\033[33m"
+      return "\033[31m"
+    }
+    # This awk is BWK awk on macOS, whose length()/substr() count BYTES while its
+    # regex engine is UTF-8 aware. Padding and truncation must go by rendered
+    # columns, so measure with gsub(/./) — which counts characters — and let
+    # RLENGTH hand substr the byte offset it needs. Getting this wrong is not
+    # cosmetic: it both misaligns rows (the 3-byte "…" alone shifts one by two)
+    # and can cut mid-codepoint, emitting invalid UTF-8.
+    function vislen(s,   t) { t = s; return gsub(/./, "&", t) }
+    function vistrunc(s, k) {
+      if (vislen(s) <= k) return s
+      match(s, "^.{" k - 1 "}")
+      return substr(s, 1, RLENGTH) "…"
+    }
     $1 == "S" {
-      # $2 session, $3 pid, $4 project, $5 status, $6 ctx, $7 model, $8 task
+      # $2 session, $3 pid, $4 project, $5 status, $6 ctx, $7 model, $8 task,
+      # $9 session_id, $10 /rename title
       n++
       s_session[n] = $2; s_pid[n] = $3; s_status[n] = $5; s_ctx[n] = $6 + 0
       s_model[n] = shortmodel($7)
-      task = $8
-      if (length(task) > 40) task = substr(task, 1, 39) "…"
-      s_task[n] = task
+      s_task[n] = vistrunc($8, 40)
       name = $10                                     # /rename title, if any
       if (name == "") name = $4                      # else abtop project
       if (name == "") { name = $2; sub("-" $3 "$", "", name) }   # else tmux name
-      if (length(name) > 24) name = substr(name, 1, 23) "…"
-      s_name[n] = name
-      w = length(name) + 2 + length($3)   # "<name> #<pid>"
+      s_name[n] = vistrunc(name, 24)
+      w = vislen(s_name[n]) + 2 + length($3)   # "<name> #<pid>", pid is ASCII
       if (w > width) width = w
     }
     # Rows are buffered rather than streamed so the name column can be sized to the
-    # widest one actually present. A fixed width cannot work now that the name is
-    # abtop project: a worktree branch ("drill-in-row-model") overflows it and shoves
-    # that row ctx% out of the others flush, while short names waste the rest.
+    # widest one actually present. A fixed width cannot work now that the name is a
+    # /rename title or a worktree branch ("drill-in-row-model"): it overflows and
+    # shoves that row own ctx% out of the other rows flush, while short names waste
+    # the rest. Both branches pad explicitly (rather than the plain one using %-*s),
+    # because %*s would count ANSI escape bytes in the colour branch — that is what
+    # lets a single printf serve both.
     END {
       for (i = 1; i <= n; i++) {
-        g = glyph(s_status[i]); ctx = s_ctx[i]
+        ctx = s_ctx[i]
+        pad = sprintf("%*s", width - (vislen(s_name[i]) + 2 + length(s_pid[i])), "")
         if (color == "1") {
-          sc = ""
-          if (s_status[i] == "Executing" || s_status[i] == "Thinking") sc = "\033[32m"
-          else if (s_status[i] == "Waiting") sc = "\033[33m"
-          cc = (ctx < 50) ? "\033[32m" : (ctx < 80 ? "\033[33m" : "\033[31m")
-          padn = width - (length(s_name[i]) + 2 + length(s_pid[i]))
-          if (padn < 0) padn = 0
-          glyph_str = sc g "\033[0m"
-          label_str = s_name[i] " \033[2m#" s_pid[i] "\033[0m" sprintf("%*s", padn, "")
-          ctx_str = cc sprintf("%3d%%", ctx) "\033[0m"
-          printf "%s\t%s %s %s %-6s %s\n", s_session[i], glyph_str, label_str, ctx_str, s_model[i], s_task[i]
+          g = statuscolor(s_status[i]) glyph(s_status[i]) "\033[0m"
+          label = s_name[i] " \033[2m#" s_pid[i] "\033[0m" pad
+          ctx_str = ctxcolor(ctx) sprintf("%3d%%", ctx) "\033[0m"
         } else {
-          printf "%s\t%s %-*s %3d%% %-6s %s\n", s_session[i], g, width, s_name[i] " #" s_pid[i], ctx, s_model[i], s_task[i]
+          g = glyph(s_status[i])
+          label = s_name[i] " #" s_pid[i] pad
+          ctx_str = sprintf("%3d%%", ctx)
         }
+        printf "%s\t%s %s %s %-6s %s\n", s_session[i], g, label, ctx_str, s_model[i], s_task[i]
       }
     }'
 }
@@ -543,7 +593,7 @@ cr_menu_lines() {
 }
 
 # cr_join <panemap_file>
-# stdin: abtop TSV rows (pid \t project \t status \t ctx \t model \t task)
+# stdin: abtop TSV rows (pid \t project \t status \t ctx \t model \t task \t session_id)
 # stdout: 'S\t<session>\t<row>' for attachable claude sessions,
 #         then 'N\t<count>' for claude sessions with no matching tmux pane.
 cr_join() {

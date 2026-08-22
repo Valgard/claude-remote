@@ -11,6 +11,11 @@ cr_setup() {
   CR_SOCKET="cr_test_${BATS_SUITE_TEST_NUMBER}_$$"
   export CR_TMUX="tmux -f /dev/null -L ${CR_SOCKET}"
   export CR_ABTOP="${REPO_ROOT}/tests/fixtures/abtop-stub"
+  # Isolate the transcript lookup too: without this, any test driving cr_menu_lines
+  # probes the developer's real ~/.claude/projects (~100 dirs). Harmless only as long
+  # as no fixture carries a session_id — pin it here rather than per test file.
+  export CR_PROJECTS_DIR="${BATS_TEST_TMPDIR}/projects"
+  mkdir -p "$CR_PROJECTS_DIR"
   # Pin the launch seam to direct exec so the suite never sources the real
   # ~/.zshrc (CR_LOGIN_SHELL=1 would run `zsh -lic` in the pane). Hermetic.
   export CR_LOGIN_SHELL=0

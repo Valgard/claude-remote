@@ -155,15 +155,24 @@ When a session ends (you quit Claude, or it exits), the few lines Claude prints 
 - `--list` — prints the menu non-interactively (one `session<TAB>display` line per session) and exits. Useful for scripting or debugging. The non-attachable footnote, if any, is written to stderr (not stdout).
 - Without flags — interactive picker. If `fzf` is installed and the picker runs on a terminal, sessions are chosen via fuzzy search (Enter attaches, `Ctrl-X` ends the highlighted session, `Ctrl-R` refreshes the list, `ESC` quits); otherwise a numbered menu is shown (select a number to attach, `k<n>` ends session `n`, `r` refreshes, `q` quits). Ending a session asks for confirmation first (`beenden? [j/N]`, default No) and then runs `tmux kill-session` on it. Either way, a `＋ neue Session` entry starts a new session (prompts for a directory). At that prompt you can type a bare project name (no `/`, no leading `~`) and it resolves to a directory under `$CR_NEW_DIR` (default `~/Projects`) — so `myproject` means `~/Projects/myproject`, sparing you the awkward `~`/long-absolute-path typing on a remote keyboard; if it doesn't exist yet you're asked whether to create it (`Anlegen? [j/N]`). An empty input uses `$CR_NEW_DIR` itself, and explicit paths (`~/…`, `$HOME/…`, `/abs`) are taken as typed. Refreshing re-queries `abtop`/`tmux` so newly started or exited sessions show up without leaving the picker.
 
-The display columns when `abtop` is available — a status glyph, the session name
-with its `#pid` (so a `-l` label shows through and same-project sessions stay
-distinct), the context-window %, the shortened model, and the current task:
+The display columns when `abtop` is available — a status glyph, a name with its
+`#pid`, the context-window %, the shortened model, and the current task:
 
 ```
-  ► claude-remote #40787    49% opus   refactor the picker
-  ◐ salesbuddy #56281       93% sonnet waiting for input
-  ○ core_keeper #9           5% —      idle here
+  ► claude-remote #40787          49% opus   refactor the picker
+  ◐ pixaki-adapter #56281         93% sonnet waiting for input
+  ► drill-in-row-model #64023     33% opus   running the tests
+  ○ core_keeper #9                 5% —      idle here
 ```
+
+The name is the most specific one available: the title you gave the session with
+Claude's `/rename`, otherwise the project `abtop` reports. That project is a *live*
+value, so a session working inside a git worktree shows the worktree
+(`drill-in-row-model`) rather than the directory it was launched from. Two sessions
+in the same directory are therefore told apart by their `/rename` title — without
+one they differ only in the `#pid`. A `-l` label is not shown here; it lives on in
+the tmux session name, which stays the attach key. Names longer than 24 characters
+are shortened with `…`, and the column adapts to the widest name on screen.
 
 Glyphs: `►` executing/thinking · `◐` waiting · `○` idle. On a terminal the glyph
 and context-% are colour-coded (green/yellow/red); `--list` output stays plain for
