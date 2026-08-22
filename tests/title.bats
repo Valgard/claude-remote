@@ -312,3 +312,44 @@ JSON
   [[ "$output" == *"MSM offene Aufgaben #${pid}"* ]]
   [[ "$output" != *"liveproj"* ]]
 }
+
+@test "cr_session_title keeps /rename even with three generated titles after it" {
+  # Pins the -m4 window. Claude Code appends the two kinds as per-turn pairs ending
+  # on the ai-title, so in practice exactly one ai-title follows the last custom-title
+  # — this fixture spends the whole budget, so shrinking the limit breaks the test
+  # rather than silently showing the generated name for a session the user renamed.
+  {
+    printf '%s\n' '{"type":"custom-title","customTitle":"Mein Name"}'
+    printf '%s\n' '{"type":"ai-title","aiTitle":"Generiert"}'
+    printf '%s\n' '{"type":"ai-title","aiTitle":"Generiert"}'
+    printf '%s\n' '{"type":"ai-title","aiTitle":"Generiert"}'
+  } > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-window.jsonl"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-window.jsonl'"
+  [ "$output" = "Mein Name" ]
+}
+
+@test "cr_session_title ignores a non-string title instead of losing both kinds" {
+  # jq aborts the whole program on a type error, so an unusable customTitle used to
+  # take the ai-title fallback down with it — indistinguishable from "no title set".
+  for bad in 42 true null '{"a":1}' '[]' '""'; do
+    {
+      printf '%s\n' '{"type":"ai-title","aiTitle":"Fallback"}'
+      printf '{"type":"custom-title","customTitle":%s}\n' "$bad"
+    } > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-bad.jsonl"
+    run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-bad.jsonl'"
+    [ "$output" = "Fallback" ] || { echo "customTitle=$bad gave '$output'"; return 1; }
+  done
+}
+
+@test "cr_session_title strips control characters, not just tabs and newlines" {
+  # An ESC would otherwise reach cr_format_rows, where vislen counts it as a visible
+  # character and vistrunc could cut inside the escape sequence.
+  python3 -c "
+import json, sys
+sys.stdout.write(json.dumps({'type':'custom-title','customTitle':'rot'+chr(27)+'[31mX'+chr(27)+'[0mende'}, separators=(',', ':')) + '\n')" \
+    > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-esc.jsonl"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-esc.jsonl'"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 1 ]
+  [ "$output" = "rot [31mX [0mende" ]
+}
