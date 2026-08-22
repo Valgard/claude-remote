@@ -47,8 +47,10 @@ JSON
   export ABTOP_FIXTURE="$fixture"
   run claude-remote-pick --list
   [ "$status" -eq 0 ]
-  # the live session is selectable (display uses the session name, not the project)
-  [[ "$output" == *"live #"* ]]
+  # the display shows abtop's live project, not the frozen tmux session name…
+  [[ "$output" == *"liveproj #"* ]]
+  # …while the attach key (column 1) stays the tmux session name
+  [[ "$output" == "live"$'\t'* ]]
   # the bogus (non-attachable) session is NOT shown as a selectable row
   [[ "$output" != *"ghostproj"* ]]
   # exactly one non-attachable session reported in the footnote
