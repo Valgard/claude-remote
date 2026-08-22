@@ -7,6 +7,8 @@
 : "${CR_SSH_PORT:=22}"
 : "${CR_ANCHOR:=_cr_anchor}"
 : "${CR_NEW_DIR:=~/Projects}"
+: "${CR_PROJECTS_DIR:=${HOME}/.claude/projects}"
+: "${CR_TAC:=tac}"
 
 # (functions added by later tasks)
 
@@ -351,8 +353,76 @@ cr_ensure_anchor() {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
 }
 
+# cr_reverse_lines <file>: emit the file's lines last-to-first.
+# Prefers GNU tac, falls back to macOS' BSD `tail -r` addressed by ABSOLUTE path —
+# a bare `tail` here may well be GNU coreutils from Homebrew, which has no -r.
+# Branching on availability rather than writing `tac "$f" || /usr/bin/tail -r "$f"`
+# is load-bearing: our reader stops at the first hit, which kills the producer with
+# SIGPIPE (exit 141), and an exit-status fallback would take that for a failure and
+# run the second tool too — emitting the content twice.
+cr_reverse_lines() {
+  if command -v "$CR_TAC" >/dev/null 2>&1; then
+    "$CR_TAC" "$1"
+  else
+    /usr/bin/tail -r "$1"
+  fi
+}
+
+# cr_custom_title <transcript.jsonl> -> the session's /rename title ("" if never set).
+# Claude Code records /rename as a {"type":"custom-title","customTitle":…} line and
+# re-appends it on *every* turn, so the LAST occurrence is the current title — hence
+# reading backwards and stopping at the first hit, which keeps the cost independent
+# of the transcript size (these files reach hundreds of MB). The grep is a cheap
+# byte-level prefilter; jq does the authoritative parse of the one line it survives.
+# Tabs/newlines inside a title are flattened to spaces so the TSV pipeline downstream
+# cannot be torn apart by a field's content.
+cr_custom_title() {
+  local f="$1"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  cr_reverse_lines "$f" 2>/dev/null |
+    grep -m1 '"type":"custom-title"' 2>/dev/null |
+    jq -r 'if type == "object" then ((.customTitle // "") | gsub("[\\t\\n\\r]"; " ")) else "" end' 2>/dev/null
+  return 0
+}
+
+# cr_session_file <session_id> -> path of that session's transcript ("" if not found).
+# Claude Code stores it as $CR_PROJECTS_DIR/<encoded-cwd>/<session-id>.jsonl, but the
+# encoding is not reproducible from abtop's cwd: a session that moved into a worktree
+# keeps the transcript under the directory it *started* in. So probe the project dirs
+# instead of deriving a path — one stat per dir, far cheaper than a recursive find
+# over the tens of thousands of transcripts these directories accumulate.
+cr_session_file() {
+  local sid="$1" d
+  [ -n "$sid" ] || return 0
+  for d in "${CR_PROJECTS_DIR}"/*/; do
+    if [ -f "${d}${sid}.jsonl" ]; then
+      printf '%s\n' "${d}${sid}.jsonl"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# cr_resolve_titles: stdin = cr_join output; stdout = the same rows with each S row
+# extended by a trailing /rename-title column (empty when none is set). N rows pass
+# through untouched. Split out as its own stage because it is the only part of the
+# display pipeline that touches the filesystem — and it runs after cr_join, so only
+# attachable sessions cost a lookup.
+cr_resolve_titles() {
+  local line sid
+  while IFS= read -r line; do
+    case "$line" in
+      S$'\t'*)
+        sid="$(printf '%s\n' "$line" | cut -f9)"
+        printf '%s\t%s\n' "$line" "$(cr_custom_title "$(cr_session_file "$sid")")"
+        ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done
+}
+
 # cr_abtop_sessions -> TSV rows for claude sessions:
-#   pid \t project_name \t status \t context_percent \t model \t current_task
+#   pid \t project_name \t status \t context_percent \t model \t current_task \t session_id
 # Returns non-zero if abtop is missing or its output is not valid JSON.
 cr_abtop_sessions() {
   local json
@@ -364,7 +434,7 @@ cr_abtop_sessions() {
     | select(.agent_cli == "claude")
     | [ (.pid|tostring), (.project_name // ""), (.status // ""),
         ((.context_percent // 0)|floor|tostring), (.model // ""),
-        (.current_task // "") ]
+        (.current_task // ""), (.session_id // "") ]
     | @tsv'
 }
 
@@ -378,10 +448,11 @@ cr_pane_map() {
 
 # cr_format_rows: stdin = cr_join output; stdout = one display line per S row,
 # TAB-separated as: <session>\t<human-text>. The session (col 1) is the attach key.
-# Display: <glyph> <name #pid> <ctx%> <model> <task>, where name is abtop's project
-# (col 4) — a *live* value, so a session running in a git worktree shows the worktree
-# it is in rather than the directory it happened to be launched from. Only when abtop
-# reports no project does it fall back to the tmux session name with its -<pid> suffix
+# Display: <glyph> <name #pid> <ctx%> <model> <task>. The name follows a preference
+# chain, most specific first: the session's /rename title (col 10, what the user
+# deliberately named this session), else abtop's project (col 4) — a *live* value, so
+# a session running in a git worktree shows the worktree rather than the directory it
+# happened to be launched from — else the tmux session name with its -<pid> suffix
 # stripped (which is also what the abtop-less path in cr_menu_lines feeds in). Note
 # that this makes a -l label invisible here — the label lives on in the session name,
 # which stays the attach key in column 1. When CR_COLOR=1
@@ -410,8 +481,9 @@ cr_format_rows() {
       task = $8
       if (length(task) > 40) task = substr(task, 1, 39) "…"
       s_task[n] = task
-      name = $4
-      if (name == "") { name = $2; sub("-" $3 "$", "", name) }
+      name = $10                                     # /rename title, if any
+      if (name == "") name = $4                      # else abtop project
+      if (name == "") { name = $2; sub("-" $3 "$", "", name) }   # else tmux name
       if (length(name) > 24) name = substr(name, 1, 23) "…"
       s_name[n] = name
       w = length(name) + 2 + length($3)   # "<name> #<pid>"
@@ -456,7 +528,7 @@ cr_menu_lines() {
   local abtop_rows joined
   if abtop_rows="$(cr_abtop_sessions)"; then
     [ -z "$abtop_rows" ] && return 0
-    joined="$(printf '%s\n' "$abtop_rows" | cr_join <(cr_pane_map))"
+    joined="$(printf '%s\n' "$abtop_rows" | cr_join <(cr_pane_map) | cr_resolve_titles)"
     printf '%s\n' "$joined" | cr_format_rows
     printf '%s\n' "$joined" | cr_footnote >&2
   else
