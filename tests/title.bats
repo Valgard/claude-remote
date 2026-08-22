@@ -1,9 +1,8 @@
 load helpers
 
 setup() {
-  cr_setup
-  # Stand-in for ~/.claude/projects: <encoded-cwd>/<session-id>.jsonl
-  export CR_PROJECTS_DIR="${BATS_TEST_TMPDIR}/projects"
+  cr_setup   # exports an isolated CR_PROJECTS_DIR
+  # Stand-in project dirs: <encoded-cwd>/<session-id>.jsonl
   mkdir -p "${CR_PROJECTS_DIR}/-Users-x-alpha" "${CR_PROJECTS_DIR}/-Users-x-beta"
 }
 teardown() { cr_teardown; }
@@ -21,6 +20,17 @@ make_transcript() {
     printf '%s\n' '{"type":"custom-title","customTitle":"zweiter-name"}'
     printf '%s\n' '{"type":"custom-title","customTitle":"aktueller-name"}'
     printf '%s\n' '{"type":"user","message":{"role":"user"}}'
+  } > "$f"
+}
+
+# Same shape, but with a caller-chosen title.
+make_transcript_named() {
+  local f="$1" title="$2"
+  {
+    printf '%s\n' '{"type":"user","message":{"role":"user"}}'
+    printf '{"type":"custom-title","customTitle":"%s"}\n' "$title"
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant"}}'
+    printf '{"type":"custom-title","customTitle":"%s"}\n' "$title"
   } > "$f"
 }
 
@@ -140,12 +150,93 @@ JSON
   [ "${lines[2]}" = "eins" ]
 }
 
-@test "cr_custom_title emits the title once, not twice, on the fallback path" {
-  # Regression guard: `tac || tail -r` would read the SIGPIPE from our early-exiting
-  # reader as a failure and run the second tool as well, printing the title twice.
-  make_transcript "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-p.jsonl"
-  run bash -c "export CR_TAC=cr-no-such-tac; source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-p.jsonl'"
+@test "cr_custom_title survives a transcript whose last line is still being written" {
+  # A live session appends mid-line; both reversers treat the final newline as a
+  # SEPARATOR, so that fragment is glued onto the previous line. If the title sits
+  # there, the reversed first hit is unparsable — the second candidate covers it.
+  {
+    printf '%s\n' '{"type":"custom-title","customTitle":"aktueller-name"}'
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant"}}'
+    printf '%s\n' '{"type":"custom-title","customTitle":"aktueller-name"}'
+    printf '%s'   '{"type":"assistant","message":{"rol'
+  } > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-torn.jsonl"
+  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-torn.jsonl'"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 1 ]
   [ "$output" = "aktueller-name" ]
+}
+
+@test "cr_custom_title skips a line that only mentions the marker in a nested object" {
+  {
+    printf '%s\n' '{"type":"custom-title","customTitle":"der-echte"}'
+    printf '%s\n' '{"type":"user","payload":{"type":"custom-title","x":1}}'
+  } > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-decoy.jsonl"
+  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-decoy.jsonl'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "der-echte" ]
+}
+
+@test "cr_custom_title is empty (not an error) for an unreadable transcript" {
+  f="${CR_PROJECTS_DIR}/-Users-x-alpha/sid-perm.jsonl"
+  make_transcript "$f"; chmod 000 "$f"
+  run bash -c "source '$LIB'; cr_custom_title '$f'"
+  chmod 644 "$f"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "cr_custom_title keeps the title's words when flattening tabs and newlines" {
+  printf '%s\n' '{"type":"custom-title","customTitle":"has\ttab and\nnewline"}' \
+    > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-flat.jsonl"
+  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-flat.jsonl'"
+  # replaced by spaces, not deleted
+  [ "$output" = "has tab and newline" ]
+}
+
+@test "cr_session_file prefers the most recently written duplicate" {
+  # A renamed/copied project dir leaves the same session id in two places; the
+  # alphabetically first is the stale one.
+  make_transcript_named "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-dup.jsonl" veraltet
+  make_transcript_named "${CR_PROJECTS_DIR}/-Users-x-beta/sid-dup.jsonl" aktuell
+  # explicit stamps: mtime has 1-second resolution, so two touches in the same
+  # second would make the comparison meaningless
+  touch -t 202001010000 "${CR_PROJECTS_DIR}/-Users-x-beta/sid-dup.jsonl"
+  touch -t 202601010000 "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-dup.jsonl"
+  run bash -c "source '$LIB'; cr_custom_title \"\$(cr_session_file sid-dup)\""
+  [ "$output" = "veraltet" ]   # alpha is newer, and alpha holds "veraltet"
+  # …and the other way round, so it cannot pass on glob order alone
+  touch -t 202601020000 "${CR_PROJECTS_DIR}/-Users-x-beta/sid-dup.jsonl"
+  run bash -c "source '$LIB'; cr_custom_title \"\$(cr_session_file sid-dup)\""
+  [ "$output" = "aktuell" ]
+}
+
+@test "cr_resolve_titles gives each session in one project dir its own title" {
+  # The case the whole feature exists for: two sessions, same directory.
+  make_transcript_named "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-a.jsonl" titel-A
+  make_transcript_named "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-b.jsonl" titel-B
+  joined="$(printf 'S\td-1\t1\tp\tExecuting\t10\topus\tt\tsid-a\nS\td-2\t2\tp\tExecuting\t10\topus\tt\tsid-b\nN\t0\n')"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_resolve_titles" _ "$joined"
+  [[ "${lines[0]}" == *$'\t'"titel-A" ]]
+  [[ "${lines[1]}" == *$'\t'"titel-B" ]]
+}
+
+@test "cr_resolve_titles does not leak a title onto a row without a transcript" {
+  make_transcript_named "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-a.jsonl" titel-A
+  joined="$(printf 'S\td-1\t1\tp\tExecuting\t10\topus\tt\tsid-a\nS\td-2\t2\tp\tExecuting\t10\topus\tt\tsid-fehlt\nN\t0\n')"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_resolve_titles" _ "$joined"
+  [[ "${lines[0]}" == *$'\t'"titel-A" ]]
+  [[ "${lines[1]}" == *$'\t' ]]
+}
+
+@test "cr_resolve_titles degrades to the project when abtop reports no session id" {
+  joined="$(printf 'S\td-1\t1\tproj\tExecuting\t10\topus\tt\t\nN\t0\n')"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_resolve_titles | cr_format_rows" _ "$joined"
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *"proj #1"* ]]
+}
+
+@test "cr_reverse_lines uses CR_TAC when it resolves" {
+  printf '#!/usr/bin/env bash\necho FROM_TAC\n' > "${BATS_TEST_TMPDIR}/mytac"
+  chmod +x "${BATS_TEST_TMPDIR}/mytac"
+  run bash -c "export CR_TAC='${BATS_TEST_TMPDIR}/mytac'; source '$LIB'; cr_reverse_lines /dev/null"
+  [ "$output" = "FROM_TAC" ]
 }
