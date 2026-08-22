@@ -23,6 +23,17 @@ make_transcript() {
   } > "$f"
 }
 
+# A transcript carrying Claude Code's *generated* title instead of a /rename one.
+make_ai_transcript() {
+  local f="$1" title="$2"
+  {
+    printf '%s\n' '{"type":"user","message":{"role":"user"}}'
+    printf '{"type":"ai-title","aiTitle":"%s"}\n' "$title"
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant"}}'
+    printf '{"type":"ai-title","aiTitle":"%s"}\n' "$title"
+  } > "$f"
+}
+
 # Same shape, but with a caller-chosen title.
 make_transcript_named() {
   local f="$1" title="$2"
@@ -34,30 +45,30 @@ make_transcript_named() {
   } > "$f"
 }
 
-@test "cr_custom_title returns the LAST title, not the first" {
+@test "cr_session_title returns the LAST title, not the first" {
   make_transcript "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-1.jsonl"
-  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-1.jsonl'"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-1.jsonl'"
   [ "$status" -eq 0 ]
   [ "$output" = "aktueller-name" ]
 }
 
-@test "cr_custom_title is empty for a transcript without any /rename" {
+@test "cr_session_title is empty for a transcript without any /rename" {
   printf '%s\n' '{"type":"user","message":{"role":"user"}}' > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-2.jsonl"
-  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-2.jsonl'"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-2.jsonl'"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 
-@test "cr_custom_title is empty (not an error) for a missing file" {
-  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/nope/nope.jsonl'"
+@test "cr_session_title is empty (not an error) for a missing file" {
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/nope/nope.jsonl'"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 
-@test "cr_custom_title survives a title containing a tab or a newline" {
+@test "cr_session_title survives a title containing a tab or a newline" {
   printf '%s\n' '{"type":"custom-title","customTitle":"has\ttab and\nnewline"}' \
     > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-3.jsonl"
-  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-3.jsonl'"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-3.jsonl'"
   [ "$status" -eq 0 ]
   # flattened to a single TSV-safe line
   [ "${#lines[@]}" -eq 1 ]
@@ -150,7 +161,7 @@ JSON
   [ "${lines[2]}" = "eins" ]
 }
 
-@test "cr_custom_title survives a transcript whose last line is still being written" {
+@test "cr_session_title survives a transcript whose last line is still being written" {
   # A live session appends mid-line; both reversers treat the final newline as a
   # SEPARATOR, so that fragment is glued onto the previous line. If the title sits
   # there, the reversed first hit is unparsable — the second candidate covers it.
@@ -160,34 +171,34 @@ JSON
     printf '%s\n' '{"type":"custom-title","customTitle":"aktueller-name"}'
     printf '%s'   '{"type":"assistant","message":{"rol'
   } > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-torn.jsonl"
-  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-torn.jsonl'"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-torn.jsonl'"
   [ "$status" -eq 0 ]
   [ "$output" = "aktueller-name" ]
 }
 
-@test "cr_custom_title skips a line that only mentions the marker in a nested object" {
+@test "cr_session_title skips a line that only mentions the marker in a nested object" {
   {
     printf '%s\n' '{"type":"custom-title","customTitle":"der-echte"}'
     printf '%s\n' '{"type":"user","payload":{"type":"custom-title","x":1}}'
   } > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-decoy.jsonl"
-  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-decoy.jsonl'"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-decoy.jsonl'"
   [ "$status" -eq 0 ]
   [ "$output" = "der-echte" ]
 }
 
-@test "cr_custom_title is empty (not an error) for an unreadable transcript" {
+@test "cr_session_title is empty (not an error) for an unreadable transcript" {
   f="${CR_PROJECTS_DIR}/-Users-x-alpha/sid-perm.jsonl"
   make_transcript "$f"; chmod 000 "$f"
-  run bash -c "source '$LIB'; cr_custom_title '$f'"
+  run bash -c "source '$LIB'; cr_session_title '$f'"
   chmod 644 "$f"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 
-@test "cr_custom_title keeps the title's words when flattening tabs and newlines" {
+@test "cr_session_title keeps the title's words when flattening tabs and newlines" {
   printf '%s\n' '{"type":"custom-title","customTitle":"has\ttab and\nnewline"}' \
     > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-flat.jsonl"
-  run bash -c "source '$LIB'; cr_custom_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-flat.jsonl'"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-flat.jsonl'"
   # replaced by spaces, not deleted
   [ "$output" = "has tab and newline" ]
 }
@@ -201,11 +212,11 @@ JSON
   # second would make the comparison meaningless
   touch -t 202001010000 "${CR_PROJECTS_DIR}/-Users-x-beta/sid-dup.jsonl"
   touch -t 202601010000 "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-dup.jsonl"
-  run bash -c "source '$LIB'; cr_custom_title \"\$(cr_session_file sid-dup)\""
+  run bash -c "source '$LIB'; cr_session_title \"\$(cr_session_file sid-dup)\""
   [ "$output" = "veraltet" ]   # alpha is newer, and alpha holds "veraltet"
   # …and the other way round, so it cannot pass on glob order alone
   touch -t 202601020000 "${CR_PROJECTS_DIR}/-Users-x-beta/sid-dup.jsonl"
-  run bash -c "source '$LIB'; cr_custom_title \"\$(cr_session_file sid-dup)\""
+  run bash -c "source '$LIB'; cr_session_title \"\$(cr_session_file sid-dup)\""
   [ "$output" = "aktuell" ]
 }
 
@@ -239,4 +250,65 @@ JSON
   chmod +x "${BATS_TEST_TMPDIR}/mytac"
   run bash -c "export CR_TAC='${BATS_TEST_TMPDIR}/mytac'; source '$LIB'; cr_reverse_lines /dev/null"
   [ "$output" = "FROM_TAC" ]
+}
+
+@test "cr_session_title falls back to the generated ai-title" {
+  make_ai_transcript "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-ai.jsonl" "Generierter Titel"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-ai.jsonl'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Generierter Titel" ]
+}
+
+@test "cr_session_title prefers /rename over the generated title" {
+  # The order that actually occurs: Claude generates a title, the user renames
+  # later, and further ai-title lines may still follow — so the custom one is NOT
+  # necessarily the last title line in the file.
+  {
+    printf '%s\n' '{"type":"ai-title","aiTitle":"Generierter Titel"}'
+    printf '%s\n' '{"type":"custom-title","customTitle":"Mein Name"}'
+    printf '%s\n' '{"type":"ai-title","aiTitle":"Generierter Titel"}'
+  } > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-both.jsonl"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-both.jsonl'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Mein Name" ]
+}
+
+@test "cr_session_title takes the newest /rename when several exist" {
+  {
+    printf '%s\n' '{"type":"custom-title","customTitle":"alt"}'
+    printf '%s\n' '{"type":"ai-title","aiTitle":"generiert"}'
+    printf '%s\n' '{"type":"custom-title","customTitle":"aktuell"}'
+  } > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-many.jsonl"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-many.jsonl'"
+  [ "$output" = "aktuell" ]
+}
+
+@test "cr_session_title survives a torn last line on an ai-title transcript" {
+  {
+    printf '%s\n' '{"type":"ai-title","aiTitle":"Generierter Titel"}'
+    printf '%s\n' '{"type":"user"}'
+    printf '%s\n' '{"type":"ai-title","aiTitle":"Generierter Titel"}'
+    printf '%s'   '{"type":"assistant","message":{"rol'
+  } > "${CR_PROJECTS_DIR}/-Users-x-alpha/sid-aitorn.jsonl"
+  run bash -c "source '$LIB'; cr_session_title '${CR_PROJECTS_DIR}/-Users-x-alpha/sid-aitorn.jsonl'"
+  [ "$output" = "Generierter Titel" ]
+}
+
+@test "cr_menu_lines shows the generated title when there is no /rename" {
+  pid="$(cr_make_session live2)"
+  sid="sid-ai-e2e"
+  make_ai_transcript "${CR_PROJECTS_DIR}/-Users-x-beta/${sid}.jsonl" "MSM offene Aufgaben"
+  fixture="${BATS_TEST_TMPDIR}/abtop2.json"
+  cat > "$fixture" <<JSON
+{ "sessions": [
+  { "agent_cli":"claude","pid":${pid},"session_id":"${sid}","project_name":"liveproj",
+    "status":"Idle","model":"opus","context_percent":5,"current_task":"alive" }
+] }
+JSON
+  export ABTOP_FIXTURE="$fixture"
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  run cr_menu_lines
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"MSM offene Aufgaben #${pid}"* ]]
+  [[ "$output" != *"liveproj"* ]]
 }

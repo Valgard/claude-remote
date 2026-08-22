@@ -369,35 +369,45 @@ cr_reverse_lines() {
   fi
 }
 
-# cr_custom_title <transcript.jsonl> -> the session's /rename title ("" if never set).
-# Claude Code records /rename as a {"type":"custom-title","customTitle":…} line and
-# re-appends the *current* title periodically (median 8 times per transcript), so the
-# LAST occurrence is the live one — hence reading backwards and stopping early, which
-# keeps a hit O(1) rather than O(file size); these transcripts reach hundreds of MB.
-# A miss still scans the whole file, since grep can only stop on a match.
+# cr_session_title <transcript.jsonl> -> the session's display title ("" if none).
+# Claude Code records two kinds, both as their own JSONL line type: `custom-title`
+# (what the user set with /rename) and `ai-title` (one it generated itself). They
+# overlap rarely but they do (36 local transcripts carry both), so /rename wins —
+# a name the user chose beats a generated one. Reading them in a single pass matters:
+# a separate lookup per kind would make every session without a /rename — the common
+# case — scan the transcript twice.
 #
-# Why -m2 and not -m1: a transcript being appended to right now ends mid-line, and
-# both reversers treat the final newline as a *separator*, so that fragment is glued
-# onto the front of the previous line. If the title happens to sit there, the reversed
-# first hit is unparsable and -m1 would report "no title" for a session that has one.
-# The second candidate covers it, and measurably at no risk: across every local
-# transcript with two or more entries, the last and second-to-last are identical
-# (52 of 52) — the value only changes on a fresh /rename.
+# The file is append-only and both kinds are re-appended periodically (median 8 and
+# ~12 entries), so the LAST occurrence of each is the live one — hence reading
+# backwards and stopping early, which keeps a hit O(1) rather than O(file size);
+# transcripts reach hundreds of MB. A miss still scans the whole file, since grep can
+# only stop on a match. -m4 is what makes one pass sufficient: where both kinds are
+# present, at most one title line follows the last custom-title (measured across every
+# local transcript carrying both), so four candidates reach past it with room to spare.
 #
-# jq must therefore be fault-tolerant per line: plain `jq` aborts the whole stream on
-# the first parse error, so a torn line would discard the good candidate behind it.
-# -R + fromjson? skips unparsable lines instead, and `.customTitle // empty` skips a
-# line that merely *contains* the marker in a nested object; head -1 takes the newest
-# survivor. grep stays a cheap byte-level prefilter; jq does the authoritative parse.
-# Tabs/newlines inside a title are flattened to spaces so the TSV pipeline downstream
-# cannot be torn apart by a field's content.
-cr_custom_title() {
+# Two subtleties, both found by review rather than by design:
+#   - The limit must exceed 1. A transcript being appended to right now ends mid-line,
+#     and both reversers treat the final newline as a *separator*, so that fragment is
+#     glued onto the front of the previous line. If a title sits there, the reversed
+#     first hit is unparsable — the later candidates cover it, and safely: across every
+#     local transcript with two or more entries, the last two are identical.
+#   - jq must tolerate that garbage per line. Plain jq aborts the entire stream on the
+#     first parse error, discarding the good candidates behind it; -R with fromjson?
+#     skips unparsable lines instead. `// empty` likewise skips a line that merely
+#     *mentions* the marker inside a nested object.
+# grep stays a cheap byte-level prefilter matching the compact serialisation (a spaced
+# variant would silently miss); jq does the authoritative parse and flattens tabs and
+# newlines so a title cannot tear the TSV pipeline apart.
+cr_session_title() {
   local f="$1"
   [ -n "$f" ] && [ -f "$f" ] || return 0
   cr_reverse_lines "$f" 2>/dev/null |
-    grep -m2 '"type":"custom-title"' |
-    jq -Rr 'fromjson? | select(type == "object") | (.customTitle // empty) | gsub("[\\t\\n\\r]"; " ")' 2>/dev/null |
-    head -1
+    grep -m4 -E '"type":"(custom|ai)-title"' |
+    jq -Rrs '[ split("\n")[] | fromjson? | select(type == "object") ] as $o
+             | ( ( [ $o[] | select(.type == "custom-title") | .customTitle // empty ] | first )
+                 // ( [ $o[] | select(.type == "ai-title") | .aiTitle // empty ] | first )
+                 // empty )
+             | gsub("[\\t\\n\\r]"; " ")' 2>/dev/null
   return 0
 }
 
@@ -444,7 +454,7 @@ cr_resolve_titles() {
         # tab is POSIX IFS whitespace, so bash collapses runs and drops empty fields — a
         # session without a project_name would silently shift every later column.
         sid="${line##*$'\t'}"
-        printf '%s\t%s\n' "$line" "$(cr_custom_title "$(cr_session_file "$sid")")"
+        printf '%s\t%s\n' "$line" "$(cr_session_title "$(cr_session_file "$sid")")"
         ;;
       *) printf '%s\n' "$line" ;;
     esac
@@ -531,11 +541,11 @@ cr_format_rows() {
       n++
       s_session[n] = $2; s_pid[n] = $3; s_status[n] = $5; s_ctx[n] = $6 + 0
       s_model[n] = shortmodel($7)
-      s_task[n] = vistrunc($8, 40)
+      s_task[n] = vistrunc($8, 24)
       name = $10                                     # /rename title, if any
       if (name == "") name = $4                      # else abtop project
       if (name == "") { name = $2; sub("-" $3 "$", "", name) }   # else tmux name
-      s_name[n] = vistrunc(name, 24)
+      s_name[n] = vistrunc(name, 38)
       w = vislen(s_name[n]) + 2 + length($3)   # "<name> #<pid>", pid is ASCII
       if (w > width) width = w
     }

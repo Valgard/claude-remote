@@ -159,19 +159,20 @@ The display columns when `abtop` is available — a status glyph, a name with it
 `#pid`, the context-window %, the shortened model, and the current task:
 
 ```
-  ► claude-remote #40787          49% opus   refactor the picker
-  ◐ pixaki-adapter #56281         93% sonnet waiting for input
-  ► drill-in-row-model #64023     33% opus   running the tests
-  ○ core_keeper #9                 5% —      idle here
+  ► Picker zeigt PID statt Session-Namen #40787    49% opus   Bash make test
+  ◐ pixaki-adapter #56281                          93% sonnet waiting for input
+  ► MSM offene Aufgaben #64023                     33% opus   Edit tests/test_x.py
+  ○ core_keeper #9                                  5% —      idle here
 ```
 
 The name is the most specific one available: the title you gave the session with
-Claude's `/rename`, otherwise the project `abtop` reports. That project is a *live*
+Claude's `/rename`, otherwise the title Claude Code generated for it itself, otherwise
+the project `abtop` reports. That project is a *live*
 value, so a session working inside a git worktree shows the worktree
-(`drill-in-row-model`) rather than the directory it was launched from. Two sessions
-in the same directory are therefore told apart by their `/rename` title — without
-one they differ only in the `#pid`. A `-l` label is not shown here; it lives on in
-the tmux session name, which stays the attach key. Names longer than 24 characters
+(`drill-in-row-model`) rather than the directory it was launched from. Two sessions in the same
+directory are therefore told apart by what they are actually about, without your
+having to name them. A `-l` label is not shown here; it lives on in
+the tmux session name, which stays the attach key. Names longer than 38 characters
 are shortened with `…`, and the column adapts to the widest name on screen.
 
 Glyphs: `►` executing/thinking · `◐` waiting · `○` idle. On a terminal the glyph
