@@ -54,3 +54,46 @@ LIB="${REPO_ROOT}/lib/claude-remote-lib.sh"
   run bash -c "source '$LIB'; printf 'N\t0\n' | cr_footnote"
   [ -z "$output" ]
 }
+
+@test "cr_format_rows shows abtop's project over the frozen tmux session name" {
+  # A worktree session: launched from .../core_keeper (so the tmux name froze as
+  # "core_keeper-64023"), but claude actually runs in the drill-in-row-model
+  # worktree — which is what abtop reports as the project.
+  joined="$(printf 'S\tcore_keeper-64023\t64023\tdrill-in-row-model\tExecuting\t33\topus\ttask\nN\t0\n')"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
+  [ "$status" -eq 0 ]
+  # attach key (column 1) is untouched — it stays the real tmux session name
+  [ "${lines[0]%%$'\t'*}" = "core_keeper-64023" ]
+  [[ "${lines[0]}" == *"drill-in-row-model #64023"* ]]
+  [[ "${lines[0]}" != *"core_keeper #64023"* ]]
+}
+
+@test "cr_format_rows falls back to the tmux name when abtop has no project" {
+  joined="$(printf 'S\tmylabel-7\t7\t\tExecuting\t10\topus\ttask\nN\t0\n')"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *"mylabel #7"* ]]
+}
+
+@test "cr_format_rows keeps the ctx% column aligned when one project name is long" {
+  # realistic 5-digit pids: "drill-in-row-model #64023" is 25 chars and overflows
+  # the old fixed 22-wide column, pushing this row's ctx% out of the others' flush
+  joined="$(printf 'S\ta-20397\t20397\tshort\tExecuting\t10\topus\tt\nS\tb-64023\t64023\tdrill-in-row-model\tExecuting\t20\topus\tt\nN\t0\n')"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
+  [ "$status" -eq 0 ]
+  a="${lines[0]#*$'\t'}"; b="${lines[1]#*$'\t'}"
+  # everything up to the first '%' must be the same width in both rows
+  pa="${a%%"%"*}"; pb="${b%%"%"*}"
+  [ "${#pa}" -eq "${#pb}" ]
+}
+
+@test "cr_format_rows caps an absurdly long project name instead of crushing the row" {
+  long="a-really-absurdly-long-worktree-branch-name-that-goes-on"
+  joined="$(printf 'S\tx-1\t1\t%s\tExecuting\t10\topus\tt\nN\t0\n' "$long")"
+  run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" != *"$long"* ]]
+  [[ "${lines[0]}" == *"…"* ]]
+  # the attach key is never truncated
+  [ "${lines[0]%%$'\t'*}" = "x-1" ]
+}

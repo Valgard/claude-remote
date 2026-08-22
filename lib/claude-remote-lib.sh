@@ -378,8 +378,13 @@ cr_pane_map() {
 
 # cr_format_rows: stdin = cr_join output; stdout = one display line per S row,
 # TAB-separated as: <session>\t<human-text>. The session (col 1) is the attach key.
-# Display: <glyph> <name #pid> <ctx%> <model> <task>, where name is the session
-# name with its -<pid> suffix stripped (so a -l label shows through). When CR_COLOR=1
+# Display: <glyph> <name #pid> <ctx%> <model> <task>, where name is abtop's project
+# (col 4) — a *live* value, so a session running in a git worktree shows the worktree
+# it is in rather than the directory it happened to be launched from. Only when abtop
+# reports no project does it fall back to the tmux session name with its -<pid> suffix
+# stripped (which is also what the abtop-less path in cr_menu_lines feeds in). Note
+# that this makes a -l label invisible here — the label lives on in the session name,
+# which stays the attach key in column 1. When CR_COLOR=1
 # the glyph and ctx% are ANSI-coloured and the pid is dimmed; otherwise plain.
 # Padding is computed on visible length so colours don't break column alignment.
 cr_format_rows() {
@@ -399,24 +404,40 @@ cr_format_rows() {
     }
     $1 == "S" {
       # $2 session, $3 pid, $4 project, $5 status, $6 ctx, $7 model, $8 task
-      session = $2; pid = $3; status = $5; ctx = $6 + 0
-      model = shortmodel($7); task = $8
-      name = session; sub("-" pid "$", "", name)
+      n++
+      s_session[n] = $2; s_pid[n] = $3; s_status[n] = $5; s_ctx[n] = $6 + 0
+      s_model[n] = shortmodel($7)
+      task = $8
       if (length(task) > 40) task = substr(task, 1, 39) "…"
-      g = glyph(status)
-      if (color == "1") {
-        sc = ""
-        if (status == "Executing" || status == "Thinking") sc = "\033[32m"
-        else if (status == "Waiting") sc = "\033[33m"
-        cc = (ctx < 50) ? "\033[32m" : (ctx < 80 ? "\033[33m" : "\033[31m")
-        plain = name " #" pid
-        padn = 22 - length(plain); if (padn < 0) padn = 0
-        glyph_str = sc g "\033[0m"
-        label_str = name " \033[2m#" pid "\033[0m" sprintf("%*s", padn, "")
-        ctx_str = cc sprintf("%3d%%", ctx) "\033[0m"
-        printf "%s\t%s %s %s %-6s %s\n", session, glyph_str, label_str, ctx_str, model, task
-      } else {
-        printf "%s\t%s %-22s %3d%% %-6s %s\n", session, g, name " #" pid, ctx, model, task
+      s_task[n] = task
+      name = $4
+      if (name == "") { name = $2; sub("-" $3 "$", "", name) }
+      if (length(name) > 24) name = substr(name, 1, 23) "…"
+      s_name[n] = name
+      w = length(name) + 2 + length($3)   # "<name> #<pid>"
+      if (w > width) width = w
+    }
+    # Rows are buffered rather than streamed so the name column can be sized to the
+    # widest one actually present. A fixed width cannot work now that the name is
+    # abtop project: a worktree branch ("drill-in-row-model") overflows it and shoves
+    # that row ctx% out of the others flush, while short names waste the rest.
+    END {
+      for (i = 1; i <= n; i++) {
+        g = glyph(s_status[i]); ctx = s_ctx[i]
+        if (color == "1") {
+          sc = ""
+          if (s_status[i] == "Executing" || s_status[i] == "Thinking") sc = "\033[32m"
+          else if (s_status[i] == "Waiting") sc = "\033[33m"
+          cc = (ctx < 50) ? "\033[32m" : (ctx < 80 ? "\033[33m" : "\033[31m")
+          padn = width - (length(s_name[i]) + 2 + length(s_pid[i]))
+          if (padn < 0) padn = 0
+          glyph_str = sc g "\033[0m"
+          label_str = s_name[i] " \033[2m#" s_pid[i] "\033[0m" sprintf("%*s", padn, "")
+          ctx_str = cc sprintf("%3d%%", ctx) "\033[0m"
+          printf "%s\t%s %s %s %-6s %s\n", s_session[i], glyph_str, label_str, ctx_str, s_model[i], s_task[i]
+        } else {
+          printf "%s\t%s %-*s %3d%% %-6s %s\n", s_session[i], g, width, s_name[i] " #" s_pid[i], ctx, s_model[i], s_task[i]
+        }
       }
     }'
 }
