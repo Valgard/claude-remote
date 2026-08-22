@@ -370,44 +370,56 @@ cr_reverse_lines() {
 }
 
 # cr_session_title <transcript.jsonl> -> the session's display title ("" if none).
-# Claude Code records two kinds, both as their own JSONL line type: `custom-title`
-# (what the user set with /rename) and `ai-title` (one it generated itself). They
-# overlap rarely but they do (36 local transcripts carry both), so /rename wins —
-# a name the user chose beats a generated one. Reading them in a single pass matters:
-# a separate lookup per kind would make every session without a /rename — the common
-# case — scan the transcript twice.
+# Claude Code records two kinds, each as its own JSONL line type: `custom-title` (set
+# by /rename) and `ai-title` (one it generates itself). /rename wins where both are
+# present — a name the user chose beats an inferred one. Reading them in a single pass
+# matters: a lookup per kind would make every session without a /rename (99.8% of the
+# corpus) scan the transcript twice, since a miss cannot exit early.
 #
-# The file is append-only and both kinds are re-appended periodically (median 8 and
-# ~12 entries), so the LAST occurrence of each is the live one — hence reading
-# backwards and stopping early, which keeps a hit O(1) rather than O(file size);
-# transcripts reach hundreds of MB. A miss still scans the whole file, since grep can
-# only stop on a match. -m4 is what makes one pass sufficient: where both kinds are
-# present, at most one title line follows the last custom-title (measured across every
-# local transcript carrying both), so four candidates reach past it with room to spare.
+# The file is append-only and both kinds are re-appended per turn, so the LAST of each
+# is the live one — hence reading backwards and stopping early, which keeps a hit O(1)
+# rather than O(file size); transcripts reach hundreds of MB. A miss still scans the
+# whole file, because grep can only stop on a match.
 #
-# Two subtleties, both found by review rather than by design:
-#   - The limit must exceed 1. A transcript being appended to right now ends mid-line,
-#     and both reversers treat the final newline as a *separator*, so that fragment is
-#     glued onto the front of the previous line. If a title sits there, the reversed
-#     first hit is unparsable — the later candidates cover it, and safely: across every
-#     local transcript with two or more entries, the last two are identical.
-#   - jq must tolerate that garbage per line. Plain jq aborts the entire stream on the
-#     first parse error, discarding the good candidates behind it; -R with fromjson?
-#     skips unparsable lines instead. `// empty` likewise skips a line that merely
-#     *mentions* the marker inside a nested object.
+# Precedence is decided by .type, NOT by position — the least obvious part of this,
+# and the one a simplifying edit would break while every test still passed. After a
+# rename Claude Code keeps appending both kinds as per-turn pairs ending on the
+# ai-title, so the generated title is the *later* line in 98 of the 112 local
+# transcripts carrying both. Taking "the last title line" would therefore show the
+# inferred name for a renamed session in the large majority of cases.
+#
+# That same pairing is why -m4 suffices for one pass: exactly one title line follows
+# the last custom-title (measured 2026-08-23 over all 226 local transcripts holding
+# one — deepest position 2 counting back), leaving two spare slots. One absorbs a torn
+# last line: a transcript being appended to right now ends mid-line, and both reversers
+# treat the final newline as a *separator*, so that fragment is glued onto the front of
+# the previous line and can render a title candidate unparsable. Losing one candidate
+# is harmless because each kind repeats (custom-title median 28 entries, ai-title 6),
+# so an earlier one within the window carries the same value. The bound is empirical
+# and the format is not ours: if Claude Code ever emits more title lines per turn, a
+# renamed session silently shows its generated title. tests/title.bats pins it.
+#
+# jq must tolerate garbage per line and per value:
+#   - -R with fromjson? skips unparsable lines; plain jq aborts the whole stream on the
+#     first parse error, which would discard the good candidates behind a torn line.
+#   - select(.type == …) rejects a line that merely *mentions* the marker inside a
+#     nested object.
+#   - select(type == "string" and . != "") skips a title whose value is not usable.
+#     Without it a numeric or object value reaches gsub, which is a *runtime* error and
+#     kills the entire program — taking the other kind's fallback down with it, and
+#     indistinguishable from "no title set" because stderr is discarded.
 # grep stays a cheap byte-level prefilter matching the compact serialisation (a spaced
-# variant would silently miss); jq does the authoritative parse and flattens tabs and
-# newlines so a title cannot tear the TSV pipeline apart.
+# variant would silently miss). gsub flattens all control characters, so neither a tab
+# can tear the TSV pipeline apart nor an ESC confuse cr_format_rows' column maths.
 cr_session_title() {
   local f="$1"
   [ -n "$f" ] && [ -f "$f" ] || return 0
   cr_reverse_lines "$f" 2>/dev/null |
-    grep -m4 -E '"type":"(custom|ai)-title"' |
-    jq -Rrs '[ split("\n")[] | fromjson? | select(type == "object") ] as $o
-             | ( ( [ $o[] | select(.type == "custom-title") | .customTitle // empty ] | first )
-                 // ( [ $o[] | select(.type == "ai-title") | .aiTitle // empty ] | first )
-                 // empty )
-             | gsub("[\\t\\n\\r]"; " ")' 2>/dev/null
+    grep -m4 -E '"type":"(custom|ai)-title"' 2>/dev/null |
+    jq -Rrs 'def pick($t; f): [ .[] | select(.type == $t) | f | select(type == "string" and . != "") ] | first;
+             [ split("\n")[] | fromjson? | select(type == "object") ]
+             | ( pick("custom-title"; .customTitle) // pick("ai-title"; .aiTitle) // empty )
+             | gsub("[[:cntrl:]]"; " ")' 2>/dev/null
   return 0
 }
 
@@ -440,7 +452,8 @@ cr_session_file() {
 }
 
 # cr_resolve_titles: stdin = cr_join output; stdout = the same rows with each S row
-# extended by a trailing /rename-title column (empty when none is set). N rows pass
+# extended by a trailing session-title column (the user's /rename if there is one,
+# else Claude Code's generated title; empty when neither exists). N rows pass
 # through untouched. Split out as its own stage because it is the only part of the
 # display pipeline that touches the filesystem — and it runs after cr_join, so only
 # attachable sessions cost a lookup.
@@ -489,8 +502,8 @@ cr_pane_map() {
 # cr_format_rows: stdin = cr_join output; stdout = one display line per S row,
 # TAB-separated as: <session>\t<human-text>. The session (col 1) is the attach key.
 # Display: <glyph> <name #pid> <ctx%> <model> <task>. The name follows a preference
-# chain, most specific first: the session's /rename title (col 10, what the user
-# deliberately named this session), else abtop's project (col 4) — a *live* value, so
+# chain, most specific first: the resolved session title (col 10 — the user's /rename
+# if set, else Claude Code's generated one; see cr_session_title), else abtop's project (col 4) — a *live* value, so
 # a session running in a git worktree shows the worktree rather than the directory it
 # happened to be launched from — else the tmux session name with its -<pid> suffix
 # stripped (which is also what the abtop-less path in cr_menu_lines feeds in). Note
@@ -537,12 +550,12 @@ cr_format_rows() {
     }
     $1 == "S" {
       # $2 session, $3 pid, $4 project, $5 status, $6 ctx, $7 model, $8 task,
-      # $9 session_id, $10 /rename title
+      # $9 session_id, $10 resolved session title (see cr_session_title)
       n++
       s_session[n] = $2; s_pid[n] = $3; s_status[n] = $5; s_ctx[n] = $6 + 0
       s_model[n] = shortmodel($7)
       s_task[n] = vistrunc($8, 24)
-      name = $10                                     # /rename title, if any
+      name = $10                                     # resolved session title, if any
       if (name == "") name = $4                      # else abtop project
       if (name == "") { name = $2; sub("-" $3 "$", "", name) }   # else tmux name
       s_name[n] = vistrunc(name, 38)
@@ -551,7 +564,7 @@ cr_format_rows() {
     }
     # Rows are buffered rather than streamed so the name column can be sized to the
     # widest one actually present. A fixed width cannot work now that the name is a
-    # /rename title or a worktree branch ("drill-in-row-model"): it overflows and
+    # session title or a worktree branch ("drill-in-row-model"): it overflows and
     # shoves that row own ctx% out of the other rows flush, while short names waste
     # the rest. Both branches pad explicitly (rather than the plain one using %-*s),
     # because %*s would count ANSI escape bytes in the colour branch — that is what

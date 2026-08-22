@@ -88,7 +88,7 @@ LIB="${REPO_ROOT}/lib/claude-remote-lib.sh"
 }
 
 @test "cr_format_rows caps an absurdly long project name instead of crushing the row" {
-  long="a-really-absurdly-long-worktree-branch-name-that-goes-on"
+  long="a-really-absurdly-long-worktree-branch-name-that-goes-on-and-on-and-on"
   joined="$(printf 'S\tx-1\t1\t%s\tExecuting\t10\topus\tt\nN\t0\n' "$long")"
   run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
   [ "$status" -eq 0 ]
@@ -98,13 +98,17 @@ LIB="${REPO_ROOT}/lib/claude-remote-lib.sh"
   [ "${lines[0]%%$'\t'*}" = "x-1" ]
 }
 
-# Column alignment is measured on rendered COLUMNS, not bytes. Both cases below
-# passed while the implementation counted bytes, because their names were pure
-# ASCII and short enough never to be truncated.
+# Column alignment is measured on rendered COLUMNS, not bytes.
+#
+# Each case asserts the ellipsis is actually present. That is not decoration: these
+# fixtures only exercise the truncation path while they exceed the name cap, and
+# raising that cap (24 -> 38 once already) silently turned all of them into no-ops
+# that still passed. The guard makes such a change fail loudly instead.
 @test "cr_format_rows keeps ctx% aligned when one name is truncated" {
-  long="abcdefghijklmnopqrstuvwxyz-0123"   # >24 -> gets the 3-byte ellipsis
+  long="abcdefghijklmnopqrstuvwxyz-0123456789-und-noch-viel-weiter"
   joined="$(printf 'S\ta-20397\t20397\tshort\tExecuting\t10\topus\tt\nS\tb-64023\t64023\t%s\tExecuting\t20\topus\tt\nN\t0\n' "$long")"
   run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
+  [[ "${lines[1]}" == *"…"* ]]   # guard: the fixture must still be truncated
   a="${lines[0]#*$'\t'}"; b="${lines[1]#*$'\t'}"
   pa="${a%%"%"*}"; pb="${b%%"%"*}"
   [ "${#pa}" -eq "${#pb}" ]
@@ -119,16 +123,18 @@ LIB="${REPO_ROOT}/lib/claude-remote-lib.sh"
 }
 
 @test "cr_format_rows truncates on characters, so the output stays valid UTF-8" {
-  joined="$(printf 'S\tx-1\t1\tGrößenänderung-Ümläute-viel-zu-lang\tExecuting\t10\topus\tt\nN\t0\n')"
+  joined="$(printf 'S\tx-1\t1\tGrößenänderung-Ümläute-und-noch-viel-mehr-Text-dahinter\tExecuting\t10\topus\tt\nN\t0\n')"
   run bash -c "source '$LIB'; printf '%s\n' \"\$1\" | cr_format_rows" _ "$joined"
   [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *"…"* ]]   # guard: the fixture must still be truncated
   printf '%s\n' "$output" | iconv -f UTF-8 -t UTF-8 >/dev/null
 }
 
 @test "cr_format_rows (CR_COLOR=1) aligns ctx% too, ignoring the escape codes" {
-  long="abcdefghijklmnopqrstuvwxyz-0123"
+  long="abcdefghijklmnopqrstuvwxyz-0123456789-und-noch-viel-weiter"
   joined="$(printf 'S\ta-20397\t20397\tshort\tExecuting\t10\topus\tt\nS\tb-64023\t64023\t%s\tExecuting\t20\topus\tt\nN\t0\n' "$long")"
   run bash -c "source '$LIB'; export CR_COLOR=1; printf '%s\n' \"\$1\" | cr_format_rows | sed \$'s/\033\\[[0-9;]*m//g'" _ "$joined"
+  [[ "${lines[1]}" == *"…"* ]]   # guard: the fixture must still be truncated
   a="${lines[0]#*$'\t'}"; b="${lines[1]#*$'\t'}"
   pa="${a%%"%"*}"; pb="${b%%"%"*}"
   [ "${#pa}" -eq "${#pb}" ]
