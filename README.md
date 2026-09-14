@@ -165,11 +165,13 @@ The display columns when `abtop` is available — a status glyph, a name with it
   ○ core_keeper #9                                  5% —      idle here
 ```
 
-The name is the most specific one available: the title you gave the session with
-Claude's `/rename`, otherwise the title Claude Code generated for it itself, otherwise
-the project `abtop` reports. That project is a *live*
+The name is the most specific one available: whatever the session currently calls
+itself — the title you gave it with Claude's `/rename`, otherwise the one Claude Code
+generated for it — and failing that, the project `abtop` reports. That project is a *live*
 value, so a session working inside a git worktree shows the worktree rather than the
-directory it was launched from. Two sessions in the same directory are told apart by
+directory it was launched from. The title is read from the session's own terminal
+title where possible, so a `/rename` shows up in the picker within a couple of
+seconds. Two sessions in the same directory are told apart by
 their title where there is one — otherwise they differ only in the `#pid`. A `-l` label is not shown here; it lives on in
 the tmux session name, which stays the attach key. Names longer than 38 characters
 are shortened with `…`, and the column adapts to the widest name on screen.
