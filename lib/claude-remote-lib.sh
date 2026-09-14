@@ -9,6 +9,17 @@
 : "${CR_NEW_DIR:=~/Projects}"
 : "${CR_PROJECTS_DIR:=${HOME:-~}/.claude/projects}"
 : "${CR_TAC:=tac}"
+# Claude Code writes its session title into the terminal title, prefixed with a
+# status glyph (U+2733 + space), and uses a fixed placeholder while no title is
+# set. Both are Claude Code's format, not ours — hence the seams: if either ever
+# changes, one env var restores the picker without a release. That matters more
+# than it looks: a dead prefix gate does NOT degrade to the project name, it
+# degrades to the transcript tier, i.e. straight back into the foreign-name bug
+# this tier exists to prevent (see cr_resolve_titles). Spelled as bytes: the
+# comparison is byte-wise, so it must not depend on this file's encoding
+# surviving an edit.
+: "${CR_TITLE_PREFIX:=$'\xe2\x9c\xb3 '}"
+: "${CR_TITLE_PLACEHOLDER:=Claude Code}"
 
 # (functions added by later tasks)
 
@@ -451,23 +462,66 @@ cr_session_file() {
   return 0
 }
 
-# cr_resolve_titles: stdin = cr_join output; stdout = the same rows with each S row
-# extended by a trailing session-title column (the user's /rename if there is one,
-# else Claude Code's generated title; empty when neither exists). N rows pass
-# through untouched. Split out as its own stage because it is the only part of the
-# display pipeline that touches the filesystem — and it runs after cr_join, so only
-# attachable sessions cost a lookup.
+# cr_resolve_titles [<pane-title-map-file>]
+# stdin = cr_join output; stdout = the same rows with each S row extended by a
+# trailing session-title column ("" when no tier answers). N rows pass through
+# untouched.
+#   Tier 1: the pane's own title, looked up by pid in <pane-title-map-file> — the
+#     "<pane_pid>\t<raw title>" stream cr_pane_titles emits — and judged by
+#     cr_pane_title_clean. Keyed by the pane, so it cannot name a foreign session,
+#     and free. Omit the argument to skip the tier (the pre-2026-09 behaviour).
+#   Tier 2: the session's own transcript (cr_session_file + cr_session_title) — the
+#     user's /rename, else Claude Code's generated title. This is the only part of
+#     the display pipeline that touches the filesystem, which is why it sits behind
+#     tier 1 and after cr_join: only attachable sessions that the pane cannot answer
+#     for cost a lookup. It is keyed by abtop's session_id, which is a guess (see
+#     "Why the pane title comes first" in CLAUDE.md) — so this tier, not tier 1, is
+#     where a wrong name comes from.
 cr_resolve_titles() {
-  local line sid
+  local titlefile="${1:-}" map="" raw line sid title
+  # Tier 1's whole map is read once, not re-scanned per row, and is wrapped in
+  # newlines so cr_pane_title_for_row can anchor its lookup on "\n<pid>\t".
+  # Gate on arity, not emptiness: `cr_resolve_titles "$(build_map)"` whose
+  # substitution failed passes "", and a `-n` test would read that as the
+  # supported no-argument form and drop tier 1 without a word — the same hole
+  # cr_ensure_line refuses an empty line for. With `$#` the empty string reaches
+  # the -r branch below and warns.
+  if [ "$#" -gt 0 ]; then
+    # `-r` and `! -d`, never `-f`: the caller passes a process substitution, and
+    # /dev/fd/N is a pipe — `-f` is false for it and would disable the whole tier
+    # in production while every test using a real file still passed. `-r` alone is
+    # not enough either: a directory is readable, and `$(<dir)` then fails without
+    # a byte on stderr. Verified on bash 3.2 and 5.3.
+    if [ -r "$titlefile" ] && [ ! -d "$titlefile" ]; then
+      raw="$(<"$titlefile")"
+      # Only wrap when there is content: $'\n\n' is non-empty, so wrapping first
+      # would make the "do we have a map?" test below always true.
+      [ -n "$raw" ] && map=$'\n'"$raw"$'\n'
+    else
+      # A path that was passed but cannot be used is a caller error, not the
+      # supported no-argument form. Silence here would leave the fix inactive with
+      # the original bug as its only symptom — in a version announced as fixing it.
+      printf 'claude-remote: Pane-Titel nicht lesbar (%s) — Titel kommen aus den Transkripten\n' \
+        "$titlefile" >&2
+    fi
+  fi
   while IFS= read -r line; do
     case "$line" in
       S$'\t'*)
-        # session_id is the row's last field (pinned by a test on cr_abtop_sessions),
-        # so strip the leading fields instead of forking cut per row. NOT `IFS=$'\t' read`:
-        # tab is POSIX IFS whitespace, so bash collapses runs and drops empty fields — a
-        # session without a project_name would silently shift every later column.
-        sid="${line##*$'\t'}"
-        printf '%s\t%s\n' "$line" "$(cr_session_title "$(cr_session_file "$sid")")"
+        cr_pane_title_for_row "$map" "$line"
+        title="$CR_PANE_TITLE"
+        # Tier 2, reached whenever the pane carries no usable title: the session's
+        # own transcript. Costs a filesystem probe per row, so it stays behind the
+        # tier that answers for free.
+        if [ -z "$title" ]; then
+          # session_id is the row's last field (pinned by a test on cr_abtop_sessions),
+          # so strip the leading fields instead of forking cut per row. NOT `IFS=$'\t' read`:
+          # tab is POSIX IFS whitespace, so bash collapses runs and drops empty fields — a
+          # session without a project_name would silently shift every later column.
+          sid="${line##*$'\t'}"
+          title="$(cr_session_title "$(cr_session_file "$sid")")"
+        fi
+        printf '%s\t%s\n' "$line" "$title"
         ;;
       *) printf '%s\n' "$line" ;;
     esac
@@ -499,11 +553,80 @@ cr_pane_map() {
   $CR_TMUX list-panes -a -F '#{pane_pid}'$'\t''#{session_name}' 2>/dev/null || true
 }
 
+# cr_pane_titles -> "<pane_pid>\t<raw pane title>" per pane, on stdout.
+# The title Claude Code itself pushed into the terminal — the only title source
+# that cannot point at a *different* session: abtop's session_id is a guess that
+# picks the most recently written transcript in the project directory, which is
+# the wrong one whenever a second Claude session ran in the same directory (a
+# cross-session message is enough). Raw here; cr_pane_title_clean judges it.
+# `-a` is load-bearing: without it tmux reports only the *current* session's panes
+# and every other session silently loses tier 1 (pinned by a test).
+# The swallowed error is a known blind spot, but a narrow one — measured, not
+# assumed: a server that is simply dead fails cr_pane_map too, every row becomes
+# an N row, and the menu comes up empty with its footnote. That is loud. The one
+# harmful shape is a failure here while cr_pane_map succeeds (a transient error
+# between the two calls): the rows render, tier 2 answers all of them, and the
+# picker looks healthy while showing foreign names. Left as is — a TSV stream has
+# no honest third state and the picker must still render — but that is the case
+# to suspect if names go wrong again.
+cr_pane_titles() {
+  # shellcheck disable=SC2086
+  $CR_TMUX list-panes -a -F '#{pane_pid}'$'\t''#{pane_title}' 2>/dev/null || true
+}
+
+# cr_pane_title_clean <raw pane title> -> sets CR_PANE_TITLE ("" when unusable).
+# Two independent gates, because they fail independently:
+#   - the prefix answers "did Claude Code set this title?" — a pane still showing
+#     the terminal default (the hostname, e.g. before the trust prompt is
+#     answered) has none;
+#   - the placeholder answers "is it a real title?" — Claude Code shows it until
+#     a /rename or a generated title exists, which is the common case.
+# Both answers are "" so the caller falls through to its next tier — which is the
+# transcript, NOT the project name: an empty answer here is not a safe default,
+# it is a return to the source this tier was added to bypass.
+# Out-variable rather than stdout, against the file's usual convention: this runs
+# once per row on every redraw, and `$(…)` would fork per row — measured ~0.65 ms,
+# some fifteen times the whole fork-free tier (~41 µs/row) and forty times the pid
+# extraction it would be guarding. It judges a string rather than producing a
+# stream, so it is not a pipeline stage; bash's own `read`/`REPLY` is the precedent.
+cr_pane_title_clean() {
+  local raw="${1:-}" title
+  CR_PANE_TITLE=""
+  case "$raw" in
+    "$CR_TITLE_PREFIX"*) title="${raw#"$CR_TITLE_PREFIX"}" ;;
+    *) return 0 ;;
+  esac
+  [ -z "$title" ] && return 0
+  [ "$title" = "$CR_TITLE_PLACEHOLDER" ] && return 0
+  CR_PANE_TITLE="$title"
+}
+
+# cr_pane_title_for_row <map> <S row> -> sets CR_PANE_TITLE ("" when none applies).
+# <map> is cr_pane_titles' output wrapped in newlines (see cr_resolve_titles).
+# Tier 1 of the title chain, split out so the loop body below stays readable.
+cr_pane_title_for_row() {
+  local map="$1" line="$2" pid hit
+  CR_PANE_TITLE=""
+  [ -n "$map" ] || return 0
+  # The row is  S \t <session> \t <pid> \t … — narrow down to field 3. NOT
+  # `IFS=$'\t' read`: tab is POSIX IFS whitespace, so bash collapses runs and
+  # drops empty fields, which would shift every column after an empty one.
+  pid="${line#*$'\t'}"
+  pid="${pid#*$'\t'}"
+  pid="${pid%%$'\t'*}"
+  # Anchored on "\n<pid>\t" so a pid that is merely a prefix of another (424 vs
+  # 4242) cannot match, and neither can a pid-shaped substring of a title.
+  hit="${map#*$'\n'"$pid"$'\t'}"
+  [ "$hit" = "$map" ] && return 0 # unchanged ⇒ anchor absent ⇒ no pane for this pid
+  cr_pane_title_clean "${hit%%$'\n'*}"
+}
+
 # cr_format_rows: stdin = cr_join output; stdout = one display line per S row,
 # TAB-separated as: <session>\t<human-text>. The session (col 1) is the attach key.
 # Display: <glyph> <name #pid> <ctx%> <model> <task>. The name follows a preference
-# chain, most specific first: the resolved session title (col 10 — the user's /rename
-# if set, else Claude Code's generated one; see cr_session_title), else abtop's project (col 4) — a *live* value, so
+# chain, most specific first: the resolved session title (col 10 — the pane's own
+# title if it has a usable one, else the transcript's; see cr_resolve_titles, which
+# owns the column and its tiers), else abtop's project (col 4) — a *live* value, so
 # a session running in a git worktree shows the worktree rather than the directory it
 # happened to be launched from — else the tmux session name with its -<pid> suffix
 # stripped (which is also what the abtop-less path in cr_menu_lines feeds in). Note
@@ -550,7 +673,9 @@ cr_format_rows() {
     }
     $1 == "S" {
       # $2 session, $3 pid, $4 project, $5 status, $6 ctx, $7 model, $8 task,
-      # $9 session_id, $10 resolved session title (see cr_session_title)
+      # $9 session_id, $10 resolved session title (pane title, else transcript —
+      #    see cr_resolve_titles). tmux rejects control characters in a pane title,
+      #    so col 10 is safe for the column maths below either way.
       n++
       s_session[n] = $2; s_pid[n] = $3; s_status[n] = $5; s_ctx[n] = $6 + 0
       s_model[n] = shortmodel($7)
@@ -601,7 +726,7 @@ cr_menu_lines() {
   local abtop_rows joined
   if abtop_rows="$(cr_abtop_sessions)"; then
     [ -z "$abtop_rows" ] && return 0
-    joined="$(printf '%s\n' "$abtop_rows" | cr_join <(cr_pane_map) | cr_resolve_titles)"
+    joined="$(printf '%s\n' "$abtop_rows" | cr_join <(cr_pane_map) | cr_resolve_titles <(cr_pane_titles))"
     printf '%s\n' "$joined" | cr_format_rows
     printf '%s\n' "$joined" | cr_footnote >&2
   else
