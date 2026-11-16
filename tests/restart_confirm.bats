@@ -75,6 +75,21 @@ nothing_stopped() {
   [ -z "$(snapshots)" ]
 }
 
+@test "confirm: a session that turned unrestorable while the user read is shown again" {
+  # Same names, but proj-1 flips ok -> skip (its session file reads empty, as a torn
+  # rewrite would): executing silently would kill it without having named it.
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  pid=$(cr_make_session proj-1)
+  restorable "$pid" S1
+  snap="$(cr_restart_snapshot_file)"
+  [ "$(cut -f1,4 "$snap")" = $'proj-1\tok' ]
+  : >"$CR_SESSIONS_DIR/$pid.json"
+  run cr_restart_confirm "$snap" <<<$'j\nn'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Wiederherstellen: 1 von 1"*"Die Sessions haben sich seit der Übersicht geändert:"*"Wiederherstellen: 0 von 1"*"  - proj-1: Session-Datei unlesbar"* ]]
+  [ -z "$(snapshots)" ]
+}
+
 @test "confirm: a changed set confirmed again runs with the new snapshot" {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   cr_make_session late-1 >/dev/null

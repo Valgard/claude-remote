@@ -58,7 +58,9 @@ GONE=99999999
   [ "$($CR_TMUX list-sessions -F '#{session_name}' | grep -c '^proj-[0-9]*$')" -eq 1 ]
 }
 
-@test "skip rows are ignored" {
+@test "skip rows are not launched but named as not restorable" {
+  # Every pane of the old server is named in the report: a skip row is gone after the
+  # restart, so it must not vanish from the report either.
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   {
     row skipme-5 5 /tmp skip "keine Session-Datei" "" "" "" ""
@@ -67,7 +69,8 @@ GONE=99999999
   run cr_restore_sessions "$f"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
-  [[ "$output" != *"skipme"* ]]
+  [[ "$output" == *$'Nicht wiederherstellbar:\n  - skipme-5: keine Session-Datei'* ]]
+  [ "$($CR_TMUX list-sessions -F '#{session_name}' | grep -c '^skipme-')" -eq 0 ]
 }
 
 @test "a session that exits at once is reported with the last line of its output" {

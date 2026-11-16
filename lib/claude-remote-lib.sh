@@ -681,21 +681,24 @@ cr_restart_snapshot_file() {
   printf '%s\n' "$snap"
 }
 
-# cr_restart_same_sessions <snapshot-a> <snapshot-b>: 0 iff both list the same set of
-# session names (column 1, order ignored).
+# cr_restart_same_sessions <snapshot-a> <snapshot-b>: 0 iff both list the same
+# (session name, verdict) pairs (columns 1 and 4, order ignored). The verdict counts
+# too: a session that turned unrestorable since the summary would otherwise be killed
+# without the user having seen that it will not come back.
 cr_restart_same_sessions() {
-  [ "$(awk -F'\t' '{ print $1 }' "$1" | LC_ALL=C sort)" = "$(awk -F'\t' '{ print $1 }' "$2" | LC_ALL=C sort)" ]
+  [ "$(awk -F'\t' '{ print $1 "\t" $4 }' "$1" | LC_ALL=C sort)" = \
+    "$(awk -F'\t' '{ print $1 "\t" $4 }' "$2" | LC_ALL=C sort)" ]
 }
 
 # cr_restart_confirm <snapshot-file>: the confirmation dialogue. Shows the summary and
 # asks [j/N], default No, reading fd 0 like the kill confirm. A "j" is checked against
-# a FRESH snapshot, because the user's reading time is a window in which sessions start
-# or end: one started meanwhile would be killed without having been named. When the set
-# of session names differs, a notice and the new summary are shown and the question
-# repeats. On a final "j" CR_RESTART_SNAP names the snapshot to execute with (the
-# freshest one; an out-variable, because the dialogue itself owns stdout) and 0 is
-# returned. Otherwise no snapshot file is left behind: 1 when declined, 2 when the fresh
-# snapshot failed (its cause is printed).
+# a FRESH snapshot, because the user's reading time is a window in which sessions start,
+# end or stop being restorable: one started meanwhile would be killed without having
+# been named. When a session was added or removed, or its verdict changed, a notice and
+# the new summary are shown and the question repeats. On a final "j" CR_RESTART_SNAP
+# names the snapshot to execute with (the freshest one; an out-variable, because the
+# dialogue itself owns stdout) and 0 is returned. Otherwise no snapshot file is left
+# behind: 1 when declined, 2 when the fresh snapshot failed (its cause is printed).
 cr_restart_confirm() {
   local snap=$1 fresh="" yn="" rc same
   CR_RESTART_SNAP=""
@@ -772,13 +775,15 @@ _cr_session_live() {
 # reported as having exited at once, with the LAST non-empty line it left behind
 # (Claude's own; a login shell can put .zshrc output before it). Restored sessions that
 # last worked somewhere other than their start dir are listed with that dir: they now
-# run in the start dir. Report on stdout (German; empty sections omitted). Returns 0
-# iff every `ok` row was restored.
+# run in the start dir. The `skip` rows are listed with their reason, so every pane of
+# the old server is named after the restart too. Report on stdout (German; empty
+# sections omitted). Returns 0 iff every `ok` row was restored.
 cr_restore_sessions() {
   local file=$1 rows line rest name pid start sid cwd args label new tok mark holder
   local total=0 restored=0 failed="" dropped="" launched="" entry new_name cap
-  local kept drop active="" drift="" noanchor=0
+  local kept drop active="" drift="" noanchor=0 lost
   rows="$(awk -F'\t' '$4 == "ok"' "$file")" || return 1
+  lost="$(awk -F'\t' '$4 != "ok" { print "  - " $1 ": " $5 }' "$file")" || return 1
   if [ -n "$rows" ]; then
     while IFS= read -r line; do
       total=$((total + 1))
@@ -866,6 +871,7 @@ cr_restore_sessions() {
   fi
   printf 'Wiederhergestellt: %d von %d\n' "$restored" "$total"
   [ -z "$failed" ] || printf 'Fehlgeschlagen:\n%s' "$failed"
+  [ -z "$lost" ] || printf 'Nicht wiederherstellbar:\n%s\n' "$lost"
   [ -z "$active" ] || printf 'Bereits aktiv (nicht doppelt gestartet):\n%s' "$active"
   [ -z "$drift" ] || printf 'Arbeiteten zuletzt woanders (laufen jetzt im Startordner):\n%s' "$drift"
   [ -z "$dropped" ] || printf 'Weggelassene Argumente:\n%s' "$dropped"
