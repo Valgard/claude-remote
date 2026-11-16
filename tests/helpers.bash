@@ -23,6 +23,9 @@ cr_setup() {
   # Pin the launch seam to direct exec so the suite never sources the real
   # ~/.zshrc (CR_LOGIN_SHELL=1 would run `zsh -lic` in the pane). Hermetic.
   export CR_LOGIN_SHELL=0
+  # Never reach the real anchor: pgrep/launchctl are pinned to `true`; tests that need a
+  # working one install a `stub`. CR_ANCHOR_WAIT keeps the give-up path short.
+  export CR_PGREP=true CR_LAUNCHCTL=true CR_ANCHOR_WAIT=2
   # Inject a stub named `claude` ahead of the real one on PATH. The isolated
   # tmux server started below inherits this PATH and resolves `claude` to the stub.
   STUB_BIN="${BATS_TEST_TMPDIR}/bin"
@@ -41,4 +44,15 @@ cr_make_session() {
   local name="$1"
   ${CR_TMUX} new-session -d -s "$name" -- claude >/dev/null
   ${CR_TMUX} display-message -p -t "$name" '#{pane_pid}'
+}
+
+# Write an executable stub into the per-test bin dir and echo its path.
+# Usage: export CR_PGREP="$(stub pgrep 'echo 12345')"
+# Bodies run as child processes: the lib's unexported CR_ANCHOR is empty there, so
+# spell the anchor name literally (_cr_anchor). CR_TMUX is exported by cr_setup.
+stub() {
+  local path="${STUB_BIN}/$1"
+  printf '#!/usr/bin/env bash\n%s\n' "$2" >"$path"
+  chmod +x "$path"
+  printf '%s\n' "$path"
 }

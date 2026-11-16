@@ -11,6 +11,12 @@
 : "${CR_TAC:=tac}"
 : "${CR_SESSIONS_DIR:=${HOME:-~}/.claude/sessions}"
 : "${CR_PS:=ps}"
+: "${CR_PGREP:=pgrep}"
+: "${CR_LAUNCHCTL:=launchctl}"
+: "${CR_ANCHOR_LABEL:=de.valgard.claude-remote-anchor}"
+# Seconds cr_start_anchor waits for the replacement server; must exceed the
+# LaunchAgent's StartInterval (CR_ANCHOR_INTERVAL, 60) so one retry tick fits.
+: "${CR_ANCHOR_WAIT:=90}"
 # Claude Code writes its session title into the terminal title, prefixed with a
 # status glyph (U+2733 + space), and uses a fixed placeholder while no title is
 # set. Both are Claude Code's format, not ours — hence the seams: if either ever
@@ -373,6 +379,57 @@ cr_ensure_anchor() {
 CR_KEEP_FLAGS="--allow-dangerously-skip-permissions --dangerously-skip-permissions --brief --chrome --no-chrome --ide --verbose --ax-screen-reader --strict-mcp-config --disable-slash-commands --bare --safe-mode --restricted"
 # Allowlisted flags that take a value; kept together with the next token.
 CR_KEEP_VALUE_FLAGS="--model --fallback-model --effort --permission-mode --agent --autocompact --setting-sources --system-prompt-snapshot"
+
+# cr_server_pid: print the running tmux server's pid; return 1 when none runs.
+cr_server_pid() {
+  local pid
+  # shellcheck disable=SC2086
+  pid="$($CR_TMUX display-message -p '#{pid}' 2>/dev/null)" || return 1
+  [ -n "$pid" ] || return 1
+  printf '%s\n' "$pid"
+}
+
+# cr_stop_anchor_and_server: end the anchor supervisor(s) first, so nothing re-births
+# the server, wait up to 5 s for them to be gone, then kill the server. Order is
+# load-bearing. Returns 1 when a server still answers afterwards.
+cr_stop_anchor_and_server() {
+  local pids pid i alive
+  pids="$($CR_PGREP -f 'claude-remote-pick --supervise-anchor' 2>/dev/null)"
+  for pid in $pids; do
+    kill -TERM "$pid" 2>/dev/null
+  done
+  i=0
+  while [ "$i" -lt 5 ]; do
+    alive=0
+    for pid in $pids; do
+      kill -0 "$pid" 2>/dev/null && alive=1
+    done
+    [ "$alive" -eq 0 ] && break
+    sleep 1
+    i=$((i + 1))
+  done
+  # shellcheck disable=SC2086
+  $CR_TMUX kill-server 2>/dev/null
+  cr_server_pid >/dev/null && return 1
+  return 0
+}
+
+# cr_start_anchor <old_server_pid>: kickstart the anchor LaunchAgent and poll once per
+# second, up to $CR_ANCHOR_WAIT, until the anchor session exists on a server whose pid
+# differs from <old_server_pid>. Returns 0 on success, 1 on timeout.
+cr_start_anchor() {
+  local old=$1 i=0 new
+  "$CR_LAUNCHCTL" kickstart "gui/$(id -u)/$CR_ANCHOR_LABEL" >/dev/null 2>&1
+  while :; do
+    # shellcheck disable=SC2086
+    if $CR_TMUX has-session -t "$CR_ANCHOR" 2>/dev/null; then
+      new="$(cr_server_pid)" && [ "$new" != "$old" ] && return 0
+    fi
+    [ "$i" -ge "$CR_ANCHOR_WAIT" ] && return 1
+    sleep 1
+    i=$((i + 1))
+  done
+}
 
 # cr_session_label <session_name>: the name without its trailing -<digits> (pid) suffix.
 cr_session_label() {

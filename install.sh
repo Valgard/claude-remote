@@ -58,7 +58,7 @@ esac
 # to the script anchor (keychain still works; LAN stays blocked) when the compiler is
 # unavailable.
 if command -v launchctl >/dev/null 2>&1; then
-  AGENT_LABEL="de.valgard.claude-remote-anchor"
+  AGENT_LABEL="$CR_ANCHOR_LABEL"
   AGENT_DIR="${HOME}/Library/LaunchAgents"
   AGENT_PLIST="${AGENT_DIR}/${AGENT_LABEL}.plist"
   AGENT_INTERVAL="${CR_ANCHOR_INTERVAL:-60}"
