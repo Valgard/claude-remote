@@ -41,3 +41,10 @@ dropped() { cr_rewrite_claude_args "$@" | awk -F'\t' '$1=="-"{print $2}' | paste
 @test "startup actions and variadic flags are dropped" {
   [ "$(kept SID --worktree feat --tmux --bg --continue --session-id X --fork-session --add-dir /a /b --verbose)" = "--verbose --resume SID" ]
 }
+
+@test "--strict-mcp-config is dropped with --mcp-config, never kept on its own" {
+  # Kept alone it would mean "only the servers from --mcp-config", which is always
+  # dropped — the session would come back without any MCP server.
+  [ "$(kept SID --strict-mcp-config --mcp-config a.json --brief)" = "--brief --resume SID" ]
+  [ "$(dropped SID --strict-mcp-config --mcp-config a.json --brief)" = "--strict-mcp-config --mcp-config a.json" ]
+}

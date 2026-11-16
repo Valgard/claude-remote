@@ -379,8 +379,10 @@ cr_ensure_anchor() {
 # --- server restart ---------------------------------------------------------------
 
 # Launch flags that stay as they are when a session is relaunched after a server
-# restart (the allowlist; everything else is dropped).
-CR_KEEP_FLAGS="--allow-dangerously-skip-permissions --dangerously-skip-permissions --brief --chrome --no-chrome --ide --verbose --ax-screen-reader --strict-mcp-config --disable-slash-commands --bare --safe-mode --restricted"
+# restart (the allowlist; everything else is dropped). Not --strict-mcp-config: it means
+# "only the servers from --mcp-config", and --mcp-config is always dropped, so keeping
+# it alone would bring the session back without any MCP server.
+CR_KEEP_FLAGS="--allow-dangerously-skip-permissions --dangerously-skip-permissions --brief --chrome --no-chrome --ide --verbose --ax-screen-reader --disable-slash-commands --bare --safe-mode --restricted"
 # Allowlisted flags that take a value; kept together with the next token.
 CR_KEEP_VALUE_FLAGS="--model --fallback-model --effort --permission-mode --agent --autocompact --setting-sources --system-prompt-snapshot"
 
