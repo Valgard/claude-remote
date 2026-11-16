@@ -6,8 +6,11 @@ setup() {
   source "$REPO_ROOT/lib/claude-remote-lib.sh"
 }
 teardown() {
-  # KILL, not TERM: the "ignore" stand-in survives TERM. Only ever our own pid.
-  [ -z "${sup:-}" ] || kill -KILL "$sup" 2>/dev/null || true
+  # KILL, not TERM: the "ignore" stand-in survives TERM. Only ever our own pids.
+  local p
+  for p in ${sup:-} ${foreign:-} ${lookalike:-}; do
+    kill -KILL "$p" 2>/dev/null || true
+  done
   cr_teardown
 }
 
@@ -33,6 +36,12 @@ make_supervisor() {
   printf '%s\n' "$f"
 }
 
+# The stand-in's command line as `ps -o args=` shows the real supervisor (the app stub
+# execs the script, whose `#!/usr/bin/env bash` turns it into `bash <path> <flag>`).
+supervisor_args() {
+  printf '%s\n' "bash $REPO_ROOT/bin/claude-remote-pick --supervise-anchor" >"$FAKE_PS_DIR/$1.args"
+}
+
 # Block (max 5 s) until the stand-in has installed its trap.
 wait_ready() {
   local i=0
@@ -47,6 +56,7 @@ wait_ready() {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   "$(make_supervisor record "$BATS_TEST_TMPDIR/order")" 3>&- &
   sup=$!
+  supervisor_args "$sup"
   wait_ready
   export CR_PGREP="$(stub pgrep "echo $sup")"
   run cr_stop_anchor_and_server
@@ -62,6 +72,7 @@ wait_ready() {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   "$(make_supervisor ignore "$BATS_TEST_TMPDIR/termlog")" 3>&- &
   sup=$!
+  supervisor_args "$sup"
   wait_ready
   export CR_PGREP="$(stub pgrep "echo $sup")"
   run cr_stop_anchor_and_server
@@ -70,6 +81,28 @@ wait_ready() {
   grep -q ignored "$BATS_TEST_TMPDIR/termlog"
   run kill -0 "$sup"
   [ "$status" -ne 0 ]
+  run $CR_TMUX list-sessions
+  [ "$status" -ne 0 ]
+}
+
+@test "stop never signals a process that merely mentions the supervisor" {
+  # pgrep -f matches a substring: a grep over a log, or a pgrep/watch typed into a
+  # terminal, carries the very string. Only a command line ENDING in
+  # <dir>/claude-remote-pick --supervise-anchor is the supervisor.
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  sleep 300 3>&- &
+  foreign=$!
+  sleep 300 3>&- &
+  lookalike=$!
+  printf '%s\n' "grep claude-remote-pick --supervise-anchor /var/log/system.log" >"$FAKE_PS_DIR/$foreign.args"
+  printf '%s\n' "pgrep -f claude-remote-pick --supervise-anchor" >"$FAKE_PS_DIR/$lookalike.args"
+  export CR_PGREP="$(stub pgrep "echo $foreign; echo $lookalike")"
+  run cr_stop_anchor_and_server
+  [ "$status" -eq 0 ]
+  run kill -0 "$foreign"
+  [ "$status" -eq 0 ]
+  run kill -0 "$lookalike"
+  [ "$status" -eq 0 ]
   run $CR_TMUX list-sessions
   [ "$status" -ne 0 ]
 }
@@ -91,6 +124,13 @@ wait_ready() {
 }
 
 @test "start gives up after CR_ANCHOR_WAIT when no server appears" {
+  CR_ANCHOR_WAIT=1 run cr_start_anchor 1
+  [ "$status" -eq 1 ]
+}
+
+@test "start does not accept a session whose name merely begins with the anchor's" {
+  # tmux resolves `-t name` by prefix when there is no exact match.
+  export CR_LAUNCHCTL="$(stub launchctl '$CR_TMUX new-session -d -s _cr_anchor_old')"
   CR_ANCHOR_WAIT=1 run cr_start_anchor 1
   [ "$status" -eq 1 ]
 }

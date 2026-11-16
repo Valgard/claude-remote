@@ -395,6 +395,24 @@ cr_server_pid() {
   printf '%s\n' "$pid"
 }
 
+# _cr_supervisor_pids: the anchor supervisors, one pid per line. `pgrep -f` matches a
+# substring, so it also finds any process that merely MENTIONS the supervisor (a grep
+# over a log, or a `watch pgrep -f …` in a terminal); only a pid whose command line
+# ends in `<dir>/claude-remote-pick --supervise-anchor` is ours. The app stub execs the
+# script by absolute path and its `#!/usr/bin/env bash` turns that into
+# `bash <dir>/claude-remote-pick --supervise-anchor`; the `/` is what tells it apart from
+# a typed `pgrep -f claude-remote-pick --supervise-anchor`, which ends the same way.
+_cr_supervisor_pids() {
+  local pid args
+  for pid in $($CR_PGREP -f 'claude-remote-pick --supervise-anchor' 2>/dev/null); do
+    args="$("$CR_PS" -o args= -p "$pid" 2>/dev/null)" || continue
+    args="${args%"${args##*[! ]}"}"
+    case $args in
+      */claude-remote-pick" --supervise-anchor") printf '%s\n' "$pid" ;;
+    esac
+  done
+}
+
 # cr_stop_anchor_and_server: end the anchor supervisor(s) first, so nothing re-births
 # the server; only once they are provably gone kill the server. TERM, wait up to 5 s,
 # KILL the survivors, wait up to 2 s; if any is still alive return 1 WITHOUT touching
@@ -402,7 +420,7 @@ cr_server_pid() {
 # answers after kill-server. Order is load-bearing.
 cr_stop_anchor_and_server() {
   local pids pid
-  pids="$($CR_PGREP -f 'claude-remote-pick --supervise-anchor' 2>/dev/null)"
+  pids="$(_cr_supervisor_pids)"
   for pid in $pids; do
     kill -TERM "$pid" 2>/dev/null
   done
@@ -440,7 +458,8 @@ _cr_wait_gone() {
 
 # cr_start_anchor <old_server_pid>: kickstart the anchor LaunchAgent and poll once per
 # second, up to $CR_ANCHOR_WAIT, until the anchor session exists on a server whose pid
-# differs from <old_server_pid>. Returns 0 on success, 1 on timeout.
+# differs from <old_server_pid>. Returns 0 on success, 1 on timeout. `=` makes the
+# match exact: without it tmux falls back to a prefix match (`_cr_anchor_old`).
 cr_start_anchor() {
   local old=$1 i=0 new
   # -k: the agent job may be mid-run (the per-interval `open` in flight); without it a
@@ -448,7 +467,7 @@ cr_start_anchor() {
   "$CR_LAUNCHCTL" kickstart -k "gui/$(id -u)/$CR_ANCHOR_LABEL" >/dev/null 2>&1
   while :; do
     # shellcheck disable=SC2086
-    if $CR_TMUX has-session -t "$CR_ANCHOR" 2>/dev/null; then
+    if $CR_TMUX has-session -t "=$CR_ANCHOR" 2>/dev/null; then
       new="$(cr_server_pid)" && [ "$new" != "$old" ] && return 0
     fi
     [ "$i" -ge "$CR_ANCHOR_WAIT" ] && return 1

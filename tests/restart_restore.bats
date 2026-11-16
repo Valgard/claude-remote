@@ -123,6 +123,14 @@ row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   [[ "$output" == *"Kein Anchor-Server läuft."* ]]
 }
 
+@test "--restore refuses when a session only begins with the anchor's name" {
+  $CR_TMUX new-session -d -s "${CR_ANCHOR}_old"
+  row proj-11 11 /tmp ok "" S1 idle "" "" >"$f"
+  run claude-remote-pick --restore "$f"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Kein Anchor-Server läuft."* ]]
+}
+
 @test "--restore restores into a running anchor server" {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   row proj-11 11 /tmp ok "" S1 idle "" "" >"$f"
