@@ -534,6 +534,38 @@ cr_restart_snapshot() {
   return 0
 }
 
+# cr_restart_summary <snapshot-file>: the German confirmation text for a restart.
+# Mid-turn = ok rows that are busy/waiting (status of skip rows is ignored). awk with
+# an explicit tab FS keeps empty columns in place; `read` with a tab IFS would not.
+cr_restart_summary() {
+  awk -F'\t' '
+    { total++ }
+    $4 == "ok" {
+      ok++
+      if ($7 == "busy" || $7 == "waiting") mid = mid "  - " $1 "\n"
+      if ($8 != "") drift = drift "  - " $1 " → " $8 "\n"
+    }
+    $4 != "ok" { lost = lost "  - " $1 ": " $5 "\n" }
+    END {
+      print "Anchor und tmux-Server werden neu gestartet."
+      printf "Wiederherstellen: %d von %d Sessions\n", ok, total
+      if (mid != "") printf "⚠️  Mitten in einer Antwort – der laufende Turn geht verloren:\n%s", mid
+      if (drift != "") printf "Arbeiteten zuletzt woanders – starten im Startordner:\n%s", drift
+      if (lost != "") printf "Nicht wiederherstellbar:\n%s", lost
+    }
+  ' "$1"
+}
+
+# cr_restart_inside_server: succeeds iff this shell runs inside the tmux server that
+# $CR_TMUX talks to (restarting from there would kill the restarter itself).
+cr_restart_inside_server() {
+  local sock
+  [ -n "${TMUX:-}" ] || return 1
+  # shellcheck disable=SC2086
+  sock="$($CR_TMUX display-message -p '#{socket_path}' 2>/dev/null)" || return 1
+  [ -n "$sock" ] && [ "${TMUX%%,*}" = "$sock" ]
+}
+
 # cr_reverse_lines <file>: emit the file's lines last-to-first.
 # Prefers GNU tac, falls back to macOS' BSD `tail -r` addressed by ABSOLUTE path —
 # a bare `tail` here may well be GNU coreutils from Homebrew, which has no -r.
