@@ -159,9 +159,19 @@ When a session ends (you quit Claude, or it exits), the few lines Claude prints 
 
 Use `Ctrl-T` (numbered menu: `s`) when a long-running tmux server has been locked out by macOS — typically `Operation not permitted` on network volumes inside sessions, while `command claude` in a plain terminal still works. A fresh server gets a fresh grant.
 
-After a confirmation (`[j/N]`, default No) the picker replaces the anchor app instance and the tmux server, then restores every Claude session with `--resume <id>` in its original start directory. Before the restart, the confirmation lists sessions that are mid-turn (their current turn will be lost), sessions that last worked in a different directory than their start directory (they restart in the start directory and may need to move back, e.g. into a git worktree), and sessions that cannot be restored, with the reason. After the restart, the report lists how many sessions came back, failures with their reasons, sessions that were already running (they are not started twice), and launch arguments that were dropped (only an allowlist of flags is carried over; positional prompts and `--name` are not).
+After a confirmation (`[j/N]`, default No) the picker replaces the anchor app instance and the tmux server, then restores every Claude session with `--resume <id>` in its original start directory. Before the restart, the confirmation lists sessions that are mid-turn (their current turn will be lost), sessions that last worked in a different directory than their start directory (they restart in the start directory and may need to move back, e.g. into a git worktree), and sessions that cannot be restored, with the reason. If sessions were started or ended while you read it, the picker says so, shows the updated list and asks again.
 
-If the restore did not finish, the report names a snapshot file; retry with `claude-remote-pick --restore <file>`. Sessions that are already running are skipped, so a retry never duplicates anything. The restart refuses to run from inside a session of the server it would restart — use a normal terminal or the iPad instead.
+Before anything is stopped, the picker prints the snapshot file and the command that restores from it, then one line per step (stopping, waiting for the new server, restoring). From then on until the report it ignores Ctrl-C and the hang-up signal of a dropped SSH connection, so the restore runs to its end.
+
+After the restart, the report lists:
+
+- how many sessions came back;
+- failures with their reasons. A session whose old process was still running after the stop counts as a failure (`alter Prozess läuft noch`), because that process no longer belongs to any tmux server;
+- sessions that were already running (they are not started twice);
+- restored sessions that last worked in another directory, with that directory (they now run in their start directory);
+- launch arguments that were dropped. Only an allowlist of flags is carried over; positional prompts, `--name`, `--mcp-config` and `--strict-mcp-config` are not.
+
+If the restore did not finish, the report names the snapshot file again; retry with `claude-remote-pick --restore <file>`. Sessions that are already running are skipped, so a retry never duplicates anything. The snapshot is readable only by you (`mktemp`, mode 0600). The restart refuses to run from inside a session of the server it would restart — use a normal terminal or the iPad instead.
 
 The display columns when `abtop` is available — a status glyph, a name with its
 `#pid`, the context-window %, the shortened model, and the current task:

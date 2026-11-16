@@ -573,7 +573,9 @@ cr_proc_claude_args() {
 # none). Read exactly like cr_session_title: backwards, grep prefilter, jq -R with
 # fromjson?. -m3 rather than -m1 because a transcript being appended to right now ends
 # mid-line and that fragment is glued onto the front of the previous line, so the first
-# hit may be unparsable; the older hits carry the same session's cwd.
+# hit may be unparsable. The next-older record then answers, which is usually the same
+# cwd but not always: a directory change made in exactly that torn last record is
+# missed (accepted, the value only feeds the informational drift marker).
 cr_last_cwd() {
   local f="$1"
   [ -n "$f" ] && [ -f "$f" ] || return 0
@@ -1548,7 +1550,7 @@ cr_pick_numbered() {
 # list), __KILL__<TAB>session (Ctrl-X on the highlighted session), __RESTART__
 # (Ctrl-T; ctrl-s is avoided because terminals use it as XOFF), or __QUIT__
 # (ESC/cancel). fzf shows only the display column (field 2..); the session key is
-# field 1. With --expect=ctrl-r,ctrl-x, fzf prints the pressed key on line 1 (empty
+# field 1. With --expect=ctrl-r,ctrl-x,ctrl-t, fzf prints the pressed key on line 1 (empty
 # for a plain Enter) and the selected line on line 2 — so Ctrl-X carries the
 # highlighted target along, exactly like Enter does for attach.
 cr_pick_fzf() {
