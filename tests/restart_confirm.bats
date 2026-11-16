@@ -1,15 +1,43 @@
 #!/usr/bin/env bats
-# The confirm/abort path of a restart: the dialogue (cr_restart_confirm).
+# The confirm/abort path of a restart: the dialogue (cr_restart_confirm) and the
+# picker's __RESTART__ case driven through the numbered menu (stdout is not a tty
+# under `run`). Every run stays on cr_setup's pins: an isolated tmux socket, and
+# pgrep/launchctl replaced by recording stand-ins that print nothing, so even a
+# wrong branch can signal nobody and kickstart nothing. Each here-string ends in q,
+# and every read in the picker treats EOF as "no"/quit, so a run cannot hang.
 load helpers
 
 setup() {
   cr_setup
   source "$REPO_ROOT/lib/claude-remote-lib.sh"
+  export CR_EXIT_DIR="$BATS_TEST_TMPDIR/exit"
+  export CR_PGREP="$(stub pgrep "touch '$BATS_TEST_TMPDIR/pgrep.called'")"
+  export CR_LAUNCHCTL="$(stub launchctl "touch '$BATS_TEST_TMPDIR/launchctl.called'")"
 }
 teardown() { cr_teardown; }
 
 # Snapshot files left in CR_RESTART_DIR (the suite's per-test tmp dir).
 snapshots() { find "$CR_RESTART_DIR" -maxdepth 1 -name 'claude-remote-restart-*'; }
+
+# Make the pane process <pid> look like a restorable claude to the snapshot.
+restorable() {
+  printf 'claude --brief\n' >"$FAKE_PS_DIR/$1.args"
+  printf 'Mon Nov 16 19:56:19 2026\n' >"$FAKE_PS_DIR/$1.lstart"
+  printf '{"sessionId":"%s","kind":"interactive","status":"idle","procStart":"Mon Nov 16 19:56:19 2026"}' \
+    "$2" >"$CR_SESSIONS_DIR/$1.json"
+}
+
+# How many times the numbered menu asked for a choice.
+menu_reads() { grep -o 'Auswahl:' <<<"$output" | wc -l | tr -d ' '; }
+
+# Nothing was stopped: same server, both sessions alive, neither stand-in ever ran.
+nothing_stopped() {
+  [ "$(cr_server_pid)" = "$1" ]
+  $CR_TMUX has-session -t "=$CR_ANCHOR"
+  $CR_TMUX has-session -t "=proj-1"
+  [ ! -e "$BATS_TEST_TMPDIR/pgrep.called" ]
+  [ ! -e "$BATS_TEST_TMPDIR/launchctl.called" ]
+}
 
 # --- the dialogue -------------------------------------------------------------
 
@@ -56,4 +84,80 @@ snapshots() { find "$CR_RESTART_DIR" -maxdepth 1 -name 'claude-remote-restart-*'
   [ "$(cut -f1 "$CR_RESTART_SNAP")" = late-1 ]
   [ ! -e "$snap" ]
   [ "$(snapshots)" = "$CR_RESTART_SNAP" ]
+}
+
+# --- the picker loop ------------------------------------------------------------
+
+@test "picker: s then n shows the summary and stops nothing" {
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  pid=$(cr_make_session proj-1)
+  restorable "$pid" S1
+  server=$(cr_server_pid)
+  run env -u TMUX claude-remote-pick <<<$'s\nn\nq'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Anchor und tmux-Server werden neu gestartet."* ]]
+  [[ "$output" == *"Wiederherstellen: 1 von 1 Sessions"* ]]
+  [[ "$output" != *"Beende Anchor und Server"* ]]
+  [ "$(menu_reads)" -eq 2 ]
+  nothing_stopped "$server"
+  [ -z "$(snapshots)" ]
+}
+
+@test "picker: s, j, Enter restarts through the agent and shows the report" {
+  # The agent stand-in births the new anchor on the suite's socket; FAKE_PS_LIVE makes
+  # the old pane process vanish from ps once kill-server has ended it, as it would.
+  export FAKE_PS_LIVE=1
+  export CR_LAUNCHCTL="$(stub launchctl "touch '$BATS_TEST_TMPDIR/launchctl.called'; $CR_TMUX new-session -d -s _cr_anchor")"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  pid=$(cr_make_session proj-1)
+  restorable "$pid" S1
+  old=$(cr_server_pid)
+  run env -u TMUX claude-remote-pick <<<$'s\nj\n\nq'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Wiederherstellen: 1 von 1 Sessions"* ]]
+  [[ "$output" == *"Snapshot: $CR_RESTART_DIR/claude-remote-restart-"* ]]
+  [[ "$output" == *"Beende Anchor und Server …"* ]]
+  [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
+  [ "$(menu_reads)" -eq 2 ]
+  [ -e "$BATS_TEST_TMPDIR/pgrep.called" ]
+  [ -e "$BATS_TEST_TMPDIR/launchctl.called" ]
+  [ "$(cr_server_pid)" != "$old" ]
+  $CR_TMUX has-session -t "=$CR_ANCHOR"
+  $CR_TMUX list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
+}
+
+@test "picker: inside the server it would restart, it refuses and stops nothing" {
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  cr_make_session proj-1 >/dev/null
+  sock="$($CR_TMUX display-message -p '#{socket_path}')"
+  server=$(cr_server_pid)
+  run env TMUX="$sock,1,0" claude-remote-pick <<<$'s\n\nq'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Neustart geht nicht aus einer Session dieses Servers"* ]]
+  [[ "$output" != *"Anchor und tmux-Server werden neu gestartet."* ]]
+  [ "$(menu_reads)" -eq 2 ]
+  nothing_stopped "$server"
+  [ -z "$(snapshots)" ]
+}
+
+@test "picker: an unusable snapshot dir is named as the cause and stops nothing" {
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  cr_make_session proj-1 >/dev/null
+  server=$(cr_server_pid)
+  run env -u TMUX CR_RESTART_DIR="$BATS_TEST_TMPDIR/missing" claude-remote-pick <<<$'s\n\nq'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Snapshot-Datei in $BATS_TEST_TMPDIR/missing konnte nicht geschrieben werden"* ]]
+  [[ "$output" != *"Kein tmux-Server läuft."* ]]
+  [ "$(menu_reads)" -eq 2 ]
+  nothing_stopped "$server"
+}
+
+@test "picker: without a server it says so and births none" {
+  run env -u TMUX claude-remote-pick <<<$'s\n\nq'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Kein tmux-Server läuft."* ]]
+  [ "$(menu_reads)" -eq 2 ]
+  run $CR_TMUX list-sessions
+  [ "$status" -ne 0 ]
+  [ -z "$(snapshots)" ]
 }
