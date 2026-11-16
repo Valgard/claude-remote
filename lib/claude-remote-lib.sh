@@ -482,6 +482,58 @@ cr_last_cwd() {
   return 0
 }
 
+# cr_restart_snapshot: one TSV row per pane of every session except $CR_ANCHOR:
+#   name  pid  start  verdict  reason  session_id  status  last_cwd  args
+# verdict is `ok` or `skip`; the first failing check sets the (German) reason:
+# not a claude process, no/garbled session file, session file of another process
+# (pid reuse), not interactive, no session id. last_cwd is where the transcript last
+# worked, left empty when unknown or equal to start. Returns 1 when no server runs.
+cr_restart_snapshot() {
+  local panes name pid start verdict reason sid kind sstat pstart args cwd rec rc
+  # shellcheck disable=SC2086
+  panes="$($CR_TMUX list-panes -a -F "#{session_name}"$'\t'"#{pane_pid}"$'\t'"#{pane_start_path}" 2>/dev/null)" || return 1
+  while IFS=$'\t' read -r name pid start; do
+    [ -n "$name" ] || continue
+    [ "$name" = "$CR_ANCHOR" ] && continue
+    verdict=skip reason="" sid="" sstat="" cwd="" args=""
+    if ! args="$(cr_proc_claude_args "$pid")"; then
+      args=""
+      reason="kein Claude-Prozess"
+    else
+      rc=0
+      rec="$(cr_session_record "$pid")" || rc=$?
+      if [ "$rc" -eq 1 ]; then
+        reason="keine Session-Datei"
+      elif [ "$rc" -ne 0 ]; then
+        reason="Session-Datei unlesbar"
+      else
+        # Split by hand: read with a tab IFS collapses empty fields and would shift
+        # the columns when the session id is empty.
+        sid=${rec%%$'\t'*}
+        rec=${rec#*$'\t'}
+        kind=${rec%%$'\t'*}
+        rec=${rec#*$'\t'}
+        sstat=${rec%%$'\t'*}
+        pstart=${rec#*$'\t'}
+        if ! cr_proc_start_matches "$pid" "$pstart"; then
+          reason="Session-Datei gehört zu einem anderen Prozess"
+        elif [ "$kind" != "interactive" ]; then
+          reason="keine interaktive Session"
+        elif [ -z "$sid" ]; then
+          reason="keine Session-ID"
+        else
+          verdict=ok
+          cwd="$(cr_last_cwd "$(cr_session_file "$sid")")"
+          [ "$cwd" != "$start" ] || cwd=""
+        fi
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$pid" "$start" "$verdict" "$reason" "$sid" "$sstat" "$cwd" "$args"
+  done <<<"$panes"
+  return 0
+}
+
 # cr_reverse_lines <file>: emit the file's lines last-to-first.
 # Prefers GNU tac, falls back to macOS' BSD `tail -r` addressed by ABSOLUTE path —
 # a bare `tail` here may well be GNU coreutils from Homebrew, which has no -r.
