@@ -3,6 +3,8 @@
 
 # Superpowers scratch (plans + brainstorming) — never committed; specs live in docs/specs/
 docs/superpowers/
+# Superpowers subagent-driven-development workspace (ledger, briefs, reports)
+/.superpowers/
 
 # macOS
 .DS_Store
