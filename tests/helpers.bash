@@ -38,7 +38,62 @@ cr_setup() {
 }
 
 cr_teardown() {
+  # Production-shape servers first: it unsets TMUX_TMPDIR, which would otherwise
+  # relocate the -L socket below and miss a server started before cr_prod_setup.
+  cr_prod_teardown
   ${CR_TMUX} kill-server 2>/dev/null || true
+}
+
+# --- production-shape tests ------------------------------------------------------
+# A "production-shape" test drives a tmux WITHOUT -L/-S, as the real CR_TMUX=tmux does.
+# Such a tmux resolves its socket from $TMUX when that is set, else from TMUX_TMPDIR —
+# and these tests run inside panes of the user's real server, whose socket $TMUX names.
+# The only isolation is TMUX_TMPDIR plus an unset TMUX, so it is checked, not trusted.
+
+# cr_prod_setup: isolate the default socket under a fresh short dir in /tmp (the bats
+# tmp path exceeds the macOS unix-socket path limit) and unset TMUX. TMUX_TMPDIR is
+# the physical path, because tmux reports its socket with symlinks resolved.
+cr_prod_setup() {
+  unset TMUX
+  CR_PROD_TMPDIR="$(mktemp -d /tmp/crtd.XXXXXX)"
+  [ -d "$CR_PROD_TMPDIR" ] || return 1
+  TMUX_TMPDIR="$(cd "$CR_PROD_TMPDIR" && pwd -P)"
+  export TMUX_TMPDIR
+}
+
+# cr_prod_fence <tmux command…>: fail unless TMUX_TMPDIR is set, TMUX is unset, and the
+# socket of the server that command reaches lies under TMUX_TMPDIR. Call it after
+# starting a server and BEFORE any kill-server or restart action.
+cr_prod_fence() {
+  local sock
+  if [ -z "${TMUX_TMPDIR:-}" ] || [ -n "${TMUX:-}" ]; then
+    echo "fence: TMUX_TMPDIR must be set and TMUX unset" >&2
+    return 1
+  fi
+  if ! sock="$("$@" display-message -p '#{socket_path}' 2>/dev/null)"; then
+    echo "fence: no server behind '$*'" >&2
+    return 1
+  fi
+  case $sock in
+    "$TMUX_TMPDIR"/*) return 0 ;;
+  esac
+  echo "fence: '$*' reaches $sock, outside $TMUX_TMPDIR" >&2
+  return 1
+}
+
+# cr_prod_teardown: end every server whose socket lies under the test's TMUX_TMPDIR,
+# addressed by that socket (-S) and never through the default lookup, then remove the
+# dir. A no-op for tests that never called cr_prod_setup.
+cr_prod_teardown() {
+  [ -n "${CR_PROD_TMPDIR:-}" ] || return 0
+  local sock
+  if [ -n "${TMUX_TMPDIR:-}" ] && [ -d "$TMUX_TMPDIR" ]; then
+    find "$TMUX_TMPDIR" -type s | while IFS= read -r sock; do
+      tmux -S "$sock" kill-server 2>/dev/null || true
+    done
+  fi
+  rm -rf "$CR_PROD_TMPDIR"
+  unset CR_PROD_TMPDIR TMUX_TMPDIR
 }
 
 # Start an isolated tmux session running the fake-claude stub.

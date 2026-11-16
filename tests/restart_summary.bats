@@ -47,24 +47,39 @@ teardown() { cr_teardown; }
 
 @test "guard: production shape (no -L) asks the target server, not the one named by TMUX" {
   # CR_TMUX without -L/-S resolves its socket from $TMUX when that is set, so the
-  # guard must query with TMUX removed. Isolate the DEFAULT socket via TMUX_TMPDIR.
-  # (Short /tmp path: BATS_TEST_TMPDIR is too long for a unix socket on macOS.)
-  export TMUX_TMPDIR
-  TMUX_TMPDIR="$(mktemp -d /tmp/crtd.XXXXXX)"
-  unset TMUX
+  # guard must query with TMUX removed. The default socket is isolated via TMUX_TMPDIR
+  # and fenced; teardown ends both servers by their socket paths.
+  cr_prod_setup
   local prod="tmux -f /dev/null" other="tmux -f /dev/null -L other_$$" tsock osock
   $prod new-session -d -s target
+  cr_prod_fence $prod
   $other new-session -d -s other
+  cr_prod_fence $other
   tsock="$($prod display-message -p '#{socket_path}')"
-  osock="$(env -u TMUX $other display-message -p '#{socket_path}')"
+  osock="$($other display-message -p '#{socket_path}')"
   local lib="${REPO_ROOT}/lib/claude-remote-lib.sh"
   run env TMUX="$osock,1,0" bash -c "source '$lib'; CR_TMUX='$prod'; cr_restart_inside_server"
-  local st_other=$status
+  [ "$status" -ne 0 ]
   run env TMUX="$tsock,1,0" bash -c "source '$lib'; CR_TMUX='$prod'; cr_restart_inside_server"
-  local st_self=$status
-  $other kill-server || true
-  $prod kill-server || true
-  rm -rf "$TMUX_TMPDIR"
-  [ "$st_other" -ne 0 ]
-  [ "$st_self" -eq 0 ]
+  [ "$status" -eq 0 ]
+}
+
+@test "the production-shape fence refuses a socket outside TMUX_TMPDIR" {
+  # The suite's own -L server lives outside the isolated dir: the fence must refuse it,
+  # and must refuse anything while TMUX is set or TMUX_TMPDIR is not.
+  $CR_TMUX new-session -d -s outside
+  local outside
+  outside="$($CR_TMUX display-message -p '#{socket_path}')"
+  cr_prod_setup
+  run cr_prod_fence tmux -S "$outside"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"outside $TMUX_TMPDIR"* ]]
+  tmux -f /dev/null new-session -d -s inside
+  run cr_prod_fence tmux -f /dev/null
+  [ "$status" -eq 0 ]
+  TMUX="$outside,1,0" run cr_prod_fence tmux -f /dev/null
+  [ "$status" -ne 0 ]
+  local keep=$TMUX_TMPDIR
+  TMUX_TMPDIR="" run cr_prod_fence tmux -S "$keep/tmux-$(id -u)/default"
+  [ "$status" -ne 0 ]
 }
