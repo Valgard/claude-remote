@@ -126,6 +126,33 @@ nothing_stopped() {
   $CR_TMUX list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
 }
 
+@test "picker: started inside a foreign tmux, the restart acts on the claude-remote server only" {
+  # Production shape: CR_TMUX without -L, so $TMUX would redirect every plain tmux call
+  # to the foreign server the picker runs in. The guard checks the default server, so
+  # the whole restart must act on that one too, and the foreign server must survive.
+  cr_prod_setup
+  local prod="tmux -f /dev/null" foreign="tmux -f /dev/null -L foreign_$$" fsock old
+  $prod new-session -d -s _cr_anchor
+  cr_prod_fence $prod
+  $foreign new-session -d -s keep
+  cr_prod_fence $foreign
+  fsock="$($foreign display-message -p '#{socket_path}')"
+  pid="$($prod new-session -d -P -F '#{pane_pid}' -s proj-1 -- claude)"
+  restorable "$pid" S1
+  old="$($prod display-message -p '#{pid}')"
+  export FAKE_PS_LIVE=1
+  export CR_LAUNCHCTL="$(stub launchctl "[ \"\$1\" = print ] && exit 0; $prod new-session -d -s _cr_anchor")"
+  run env TMUX="$fsock,1,0" CR_TMUX="$prod" claude-remote-pick <<<$'s\nj\n\nq'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
+  $foreign has-session -t "=keep"
+  [ "$($foreign list-sessions -F '#{session_name}' | grep -c '^proj-')" -eq 0 ]
+  [ "$($prod display-message -p '#{pid}')" != "$old" ]
+  $prod list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
+  # The loop goes on with the caller's TMUX again: the redrawn menu is the foreign one.
+  [[ "${output##*Claude-Sessions:}" == *"1) keep"* ]]
+}
+
 @test "picker: inside the server it would restart, it refuses and stops nothing" {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   cr_make_session proj-1 >/dev/null

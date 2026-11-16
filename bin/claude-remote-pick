@@ -26,7 +26,10 @@ fi
 # --restore <file>: relaunch the sessions of a restart snapshot into the running anchor
 # server (the retry path after a restart whose restore step did not finish). `=` makes
 # the anchor match exact; plain -t would also accept a session merely prefixed by it.
+# TMUX unset, as in the picker's restart: a tmux without -L/-S would otherwise check and
+# launch into whatever server this shell runs in instead of the claude-remote one.
 if [ "${1:-}" = "--restore" ]; then
+  unset TMUX
   # shellcheck disable=SC2086
   if ! $CR_TMUX has-session -t "=$CR_ANCHOR" 2>/dev/null; then
     echo "Kein Anchor-Server läuft."
@@ -147,21 +150,27 @@ while true; do
         read -r -p 'Weiter mit Enter ' _ || true
         continue
       fi
-      # No server, or no writable snapshot file: the function names which.
-      if ! snap="$(cr_restart_snapshot_file)"; then
-        read -r -p 'Weiter mit Enter ' _ || true
-        continue
-      fi
-      # Summary, [j/N], and a re-check against a fresh snapshot after "j".
+      # The guard asked the server $CR_TMUX reaches with TMUX removed. A tmux without
+      # -L/-S takes its socket from $TMUX when that is set, so everything below runs
+      # with TMUX unset: snapshot, stop, agent and restore then all address that same
+      # server, never a foreign one this picker happens to run in. Put back afterwards,
+      # the menu and attach keep the caller's environment.
+      restart_tmux=${TMUX-} restart_had_tmux=${TMUX+1}
+      unset TMUX
       rc=0
-      cr_restart_confirm "$snap" || rc=$?
+      # No server, or no writable snapshot file: the function names which.
+      if snap="$(cr_restart_snapshot_file)"; then
+        # Summary, [j/N], and a re-check against a fresh snapshot after "j".
+        cr_restart_confirm "$snap" || rc=$?
+      else
+        rc=2
+      fi
       case "$rc" in
-        0)
-          cr_restart_execute "$CR_RESTART_SNAP"
-          read -r -p 'Weiter mit Enter ' _ || true
-          ;;
-        2) read -r -p 'Weiter mit Enter ' _ || true ;; # the fresh snapshot failed
+        0) cr_restart_execute "$CR_RESTART_SNAP" ;;
       esac
+      # A decline (1) ends silently; everything else left a message to read.
+      [ "$rc" -eq 1 ] || read -r -p 'Weiter mit Enter ' _ || true
+      [ -z "$restart_had_tmux" ] || export TMUX="$restart_tmux"
       ;;
     *)
       # Re-attach to a running session: arm capture (it may predate this feature

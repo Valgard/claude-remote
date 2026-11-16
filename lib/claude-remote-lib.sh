@@ -933,14 +933,16 @@ _cr_restart_run() {
   return "$rc"
 }
 
-# cr_restart_inside_server: succeeds iff this shell runs inside the tmux server that
-# $CR_TMUX talks to (restarting from there would kill the restarter itself).
+# cr_restart_inside_server: succeeds iff $TMUX names the socket of the server that
+# $CR_TMUX reaches with TMUX removed. That is the server a restart acts on, because the
+# picker runs the whole restart path with TMUX unset; restarting from inside it would
+# kill the restarter itself. Asking with $TMUX in place would be wrong: a tmux without
+# -L/-S takes its socket from $TMUX, so it would always answer with the caller's own
+# server.
 cr_restart_inside_server() {
   local sock
   [ -n "${TMUX:-}" ] || return 1
   # shellcheck disable=SC2086
-  # TMUX removed: a plain `tmux` resolves its socket from $TMUX when set, which would
-  # make this report the CALLER's server instead of the target one.
   sock="$(env -u TMUX $CR_TMUX display-message -p '#{socket_path}' 2>/dev/null)" || return 1
   [ -n "$sock" ] && [ "${TMUX%%,*}" = "$sock" ]
 }

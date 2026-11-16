@@ -263,6 +263,24 @@ live_session() {
   [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
 }
 
+@test "--restore inside a foreign tmux restores into the claude-remote server" {
+  # Production shape: without -L, $TMUX would send the anchor check and every launch
+  # to the foreign server this shell runs in.
+  cr_prod_setup
+  local prod="tmux -f /dev/null" foreign="tmux -f /dev/null -L foreign_$$" fsock
+  $prod new-session -d -s _cr_anchor
+  cr_prod_fence $prod
+  $foreign new-session -d -s keep
+  cr_prod_fence $foreign
+  fsock="$($foreign display-message -p '#{socket_path}')"
+  row proj-11 11 /tmp ok "" S1 idle "" "" >"$f"
+  run env TMUX="$fsock,1,0" CR_TMUX="$prod" claude-remote-pick --restore "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
+  $prod list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
+  [ "$($foreign list-sessions -F '#{session_name}' | grep -c '^proj-')" -eq 0 ]
+}
+
 @test "a session already held by a live process is not launched again" {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   live_session 777 S1 "Thu Jan  1 00:00:00 2026" "Thu Jan  1 00:00:00 2026"
