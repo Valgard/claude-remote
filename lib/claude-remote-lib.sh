@@ -925,13 +925,19 @@ _cr_restart_agent_loaded() {
 }
 
 # _cr_restart_run <snapshot-file>: the phases of cr_restart_execute, one German progress
-# line each. Before anything is stopped it checks that the anchor LaunchAgent is loaded:
-# it is the only thing that may birth the new server, so without it the restart would
-# end every session and bring nothing back. After the stop it waits (up to 10 s) for the
-# `ok` rows' old pane processes to exit: one still exiting would look like a live holder
-# of its session to the restore (which then fails that row rather than counting it).
+# line each. Before anything is stopped it checks two preconditions and refuses without
+# them: a snapshot file that exists, is readable and is not empty (it is the only way
+# back), and a loaded anchor LaunchAgent (it is the only thing that may birth the new
+# server); without either the restart would end every session and bring nothing back.
+# After the stop it waits (up to 10 s) for the `ok` rows' old pane processes to exit:
+# one still exiting would look like a live holder of its session to the restore (which
+# then fails that row rather than counting it).
 _cr_restart_run() {
   local file=$1 old pids n rc=0
+  if [ ! -f "$file" ] || [ ! -r "$file" ] || [ ! -s "$file" ]; then
+    echo "Snapshot-Datei $file fehlt, ist leer (keine Sessions) oder nicht lesbar – es wurde nichts beendet."
+    return 1
+  fi
   _cr_restart_agent_loaded || return 1
   _cr_restart_hint "$file"
   old="$(cr_server_pid)" || old=""

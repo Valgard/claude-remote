@@ -123,6 +123,28 @@ GONE=99999999
   $CR_TMUX list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
 }
 
+@test "execute refuses a missing, empty or unreadable snapshot and stops nothing" {
+  # Stopping without a usable snapshot would end every session with no way back.
+  export CR_PGREP="$(stub pgrep "touch '$BATS_TEST_TMPDIR/pgrep.called'")"
+  export CR_LAUNCHCTL="$(stub launchctl "touch '$BATS_TEST_TMPDIR/lc.called'")"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  cr_make_session proj-1 >/dev/null
+  old=$(cr_server_pid)
+  local missing="$BATS_TEST_TMPDIR/does-not-exist" empty="$BATS_TEST_TMPDIR/empty" locked="$BATS_TEST_TMPDIR/locked"
+  : >"$empty"
+  row proj-1 "$GONE" /tmp ok "" S1 idle "" "" >"$locked"
+  chmod 000 "$locked"
+  for s in "$missing" "$empty" "$locked"; do
+    run cr_restart_execute "$s"
+    [ "$status" -ne 0 ]
+    [ "$output" = "Snapshot-Datei $s fehlt, ist leer (keine Sessions) oder nicht lesbar – es wurde nichts beendet." ]
+  done
+  [ ! -e "$BATS_TEST_TMPDIR/pgrep.called" ]
+  [ ! -e "$BATS_TEST_TMPDIR/lc.called" ]
+  [ "$(cr_server_pid)" = "$old" ]
+  $CR_TMUX has-session -t "=proj-1"
+}
+
 @test "execute asks launchctl for the agent before it kickstarts it" {
   export CR_LAUNCHCTL="$(stub launchctl 'printf "%s\n" "$*" >>"$BATS_TEST_TMPDIR/lc.argv"
 [ "$1" = print ] && exit 0
