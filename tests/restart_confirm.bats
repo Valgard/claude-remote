@@ -122,7 +122,7 @@ nothing_stopped() {
   # The agent stand-in births the new anchor on the suite's socket; FAKE_PS_LIVE makes
   # the old pane process vanish from ps once kill-server has ended it, as it would.
   export FAKE_PS_LIVE=1
-  export CR_LAUNCHCTL="$(stub launchctl "touch '$BATS_TEST_TMPDIR/launchctl.called'; $CR_TMUX new-session -d -s _cr_anchor")"
+  export CR_LAUNCHCTL="$(agent_stub "touch '$BATS_TEST_TMPDIR/launchctl.called'; $CR_TMUX new-session -d -s _cr_anchor")"
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   pid=$(cr_make_session proj-1)
   restorable "$pid" S1
@@ -156,7 +156,7 @@ nothing_stopped() {
   restorable "$pid" S1
   old="$($prod display-message -p '#{pid}')"
   export FAKE_PS_LIVE=1
-  export CR_LAUNCHCTL="$(stub launchctl "[ \"\$1\" = print ] && exit 0; $prod new-session -d -s _cr_anchor")"
+  export CR_LAUNCHCTL="$(agent_stub "$prod new-session -d -s _cr_anchor")"
   run env TMUX="$fsock,1,0" CR_TMUX="$prod" claude-remote-pick <<<$'s\nj\n\nq'
   [ "$status" -eq 0 ]
   [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]

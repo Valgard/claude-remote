@@ -123,6 +123,17 @@ wait_ready() {
   [ "$(cat "$BATS_TEST_TMPDIR/lc.argv")" = "kickstart -k gui/$(id -u)/de.valgard.claude-remote-anchor" ]
 }
 
+@test "start reports a failed kickstart and still waits for the agent's own start" {
+  # The agent is loaded (the restart checked it first), so its interval can still birth
+  # the anchor; the failure is named, not swallowed, and the wait goes on.
+  export CR_LAUNCHCTL="$(stub launchctl 'echo "Bootstrap failed: 5: Input/output error" >&2
+$CR_TMUX new-session -d -s _cr_anchor
+exit 37')"
+  run cr_start_anchor 1
+  [ "$status" -eq 0 ]
+  [ "$output" = "launchctl kickstart fehlgeschlagen (Exit 37): Bootstrap failed: 5: Input/output error" ]
+}
+
 @test "start gives up after CR_ANCHOR_WAIT when no server appears" {
   CR_ANCHOR_WAIT=1 run cr_start_anchor 1
   [ "$status" -eq 1 ]

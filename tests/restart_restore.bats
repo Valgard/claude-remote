@@ -112,7 +112,7 @@ GONE=99999999
 }
 
 @test "execute stops, restarts via the agent and restores" {
-  export CR_LAUNCHCTL="$(stub launchctl '$CR_TMUX new-session -d -s _cr_anchor')"
+  export CR_LAUNCHCTL="$(agent_stub '$CR_TMUX new-session -d -s _cr_anchor')"
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   old=$(cr_server_pid)
   row proj-11 "$GONE" /tmp ok "" S1 idle "" "" >"$f"
@@ -121,6 +121,49 @@ GONE=99999999
   [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
   [ "$(cr_server_pid)" != "$old" ]
   $CR_TMUX list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
+}
+
+@test "execute asks launchctl for the agent before it kickstarts it" {
+  export CR_LAUNCHCTL="$(stub launchctl 'printf "%s\n" "$*" >>"$BATS_TEST_TMPDIR/lc.argv"
+[ "$1" = print ] && exit 0
+$CR_TMUX new-session -d -s _cr_anchor')"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  row proj-11 "$GONE" /tmp ok "" S1 idle "" "" >"$f"
+  run cr_restart_execute "$f"
+  [ "$status" -eq 0 ]
+  local agent="gui/$(id -u)/de.valgard.claude-remote-anchor"
+  [ "$(cat "$BATS_TEST_TMPDIR/lc.argv")" = "print $agent"$'\n'"kickstart -k $agent" ]
+}
+
+@test "execute refuses and stops nothing when the anchor agent is not loaded" {
+  # Without the agent nothing could ever birth the new server, so this must be found
+  # out before the stop, not after every session is gone.
+  export CR_PGREP="$(stub pgrep "touch '$BATS_TEST_TMPDIR/pgrep.called'")"
+  export CR_LAUNCHCTL="$(stub launchctl "if [ \"\$1\" = print ]; then echo 'Could not find service \"de.valgard.claude-remote-anchor\" in domain for user gui: 501' >&2; exit 113; fi
+touch '$BATS_TEST_TMPDIR/kick.called'")"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  cr_make_session proj-1 >/dev/null
+  old=$(cr_server_pid)
+  row proj-11 "$GONE" /tmp ok "" S1 idle "" "" >"$f"
+  run cr_restart_execute "$f"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"LaunchAgent de.valgard.claude-remote-anchor"*"es wurde nichts beendet"* ]]
+  [[ "$output" == *'Could not find service "de.valgard.claude-remote-anchor"'* ]]
+  [[ "$output" != *"Beende Anchor und Server"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/pgrep.called" ]
+  [ ! -e "$BATS_TEST_TMPDIR/kick.called" ]
+  [ "$(cr_server_pid)" = "$old" ]
+  $CR_TMUX has-session -t "=proj-1"
+}
+
+@test "execute reports a failed kickstart with its exit code and error" {
+  export CR_LAUNCHCTL="$(agent_stub 'echo "Bootstrap failed: 5: Input/output error" >&2; exit 37')"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  row proj-11 "$GONE" /tmp ok "" S1 idle "" "" >"$f"
+  CR_ANCHOR_WAIT=1 run cr_restart_execute "$f"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"launchctl kickstart fehlgeschlagen (Exit 37): Bootstrap failed: 5: Input/output error"* ]]
+  [[ "$output" == *"Anchor/Server kam nicht hoch."* ]]
 }
 
 @test "execute names the snapshot and the retry before it stops anything" {
@@ -138,7 +181,7 @@ GONE=99999999
 }
 
 @test "execute announces the restore with the number of sessions" {
-  export CR_LAUNCHCTL="$(stub launchctl '$CR_TMUX new-session -d -s _cr_anchor')"
+  export CR_LAUNCHCTL="$(agent_stub '$CR_TMUX new-session -d -s _cr_anchor')"
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   {
     row proj-11 "$GONE" /tmp ok "" S1 idle "" ""
@@ -172,7 +215,7 @@ GONE=99999999
 }
 
 @test "execute prints the snapshot and hint when a restore fails" {
-  export CR_LAUNCHCTL="$(stub launchctl '$CR_TMUX new-session -d -s _cr_anchor')"
+  export CR_LAUNCHCTL="$(agent_stub '$CR_TMUX new-session -d -s _cr_anchor')"
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   row gone-11 "$GONE" /nonexistent ok "" S1 idle "" "" >"$f"
   run cr_restart_execute "$f"
@@ -184,10 +227,15 @@ GONE=99999999
   # The agent stand-in interrupts its caller mid-restart, as Ctrl-C or a dropped SSH
   # channel would. Without the ignore, HUP ends the shell and INT runs the trap. It
   # births the server first, so teardown finds it even when the caller dies early.
-  export CR_LAUNCHCTL="$(stub launchctl '$CR_TMUX new-session -d -s _cr_anchor; kill -INT $PPID; kill -HUP $PPID')"
+  # The caller is addressed by the pid it recorded, not by $PPID: the kickstart runs
+  # inside a command substitution, whose subshell would be the parent instead.
+  export CR_LAUNCHCTL="$(agent_stub '$CR_TMUX new-session -d -s _cr_anchor
+caller=$(cat "$BATS_TEST_TMPDIR/caller.pid")
+kill -INT "$caller"; kill -HUP "$caller"')"
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   row proj-11 "$GONE" /tmp ok "" S1 idle "" "" >"$f"
-  run bash -c "source '$REPO_ROOT/lib/claude-remote-lib.sh'
+  run bash -c "echo \$\$ >'$BATS_TEST_TMPDIR/caller.pid'
+    source '$REPO_ROOT/lib/claude-remote-lib.sh'
     trap 'touch \"$BATS_TEST_TMPDIR/int-fired\"' INT
     cr_restart_execute '$f'
     echo \"rc=\$?\"
@@ -228,7 +276,7 @@ live_session() {
 
 @test "execute waits for the old processes to exit, then restores them" {
   export FAKE_PS_LIVE=1
-  export CR_LAUNCHCTL="$(stub launchctl '$CR_TMUX new-session -d -s _cr_anchor')"
+  export CR_LAUNCHCTL="$(agent_stub '$CR_TMUX new-session -d -s _cr_anchor')"
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   # The old claude takes ~2 s to exit after its server is gone.
   sleep 2 3>&- &

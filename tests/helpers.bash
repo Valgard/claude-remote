@@ -114,3 +114,10 @@ stub() {
   chmod +x "$path"
   printf '%s\n' "$path"
 }
+
+# agent_stub <body>: a launchctl stand-in whose `print` succeeds (the agent is loaded,
+# so the restart's preflight passes) and whose other calls (the kickstart) run <body>.
+agent_stub() {
+  stub launchctl "[ \"\$1\" = print ] && exit 0
+$1"
+}

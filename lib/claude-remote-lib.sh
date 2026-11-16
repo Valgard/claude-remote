@@ -460,11 +460,18 @@ _cr_wait_gone() {
 # second, up to $CR_ANCHOR_WAIT, until the anchor session exists on a server whose pid
 # differs from <old_server_pid>. Returns 0 on success, 1 on timeout. `=` makes the
 # match exact: without it tmux falls back to a prefix match (`_cr_anchor_old`).
+# A failed kickstart is printed with its exit code and error, and the wait still runs:
+# the restart checked that the agent is loaded, so its own interval can birth the
+# anchor all the same.
 cr_start_anchor() {
-  local old=$1 i=0 new
+  local old=$1 i=0 new err rc=0
   # -k: the agent job may be mid-run (the per-interval `open` in flight); without it a
   # kickstart can leave that run alone and no fresh anchor starts until the next tick.
-  "$CR_LAUNCHCTL" kickstart -k "gui/$(id -u)/$CR_ANCHOR_LABEL" >/dev/null 2>&1
+  err="$("$CR_LAUNCHCTL" kickstart -k "gui/$(id -u)/$CR_ANCHOR_LABEL" 2>&1 >/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    err="$(printf '%s\n' "$err" | awk 'NF { last = $0 } END { print last }')"
+    echo "launchctl kickstart fehlgeschlagen (Exit $rc)${err:+: $err}"
+  fi
   while :; do
     # shellcheck disable=SC2086
     if $CR_TMUX has-session -t "=$CR_ANCHOR" 2>/dev/null; then
@@ -906,12 +913,26 @@ cr_restart_execute() {
   return "$rc"
 }
 
+# _cr_restart_agent_loaded: 0 iff launchctl knows the anchor LaunchAgent. Otherwise it
+# prints the German refusal, with launchctl's own last line, and returns 1.
+_cr_restart_agent_loaded() {
+  local out
+  out="$("$CR_LAUNCHCTL" print "gui/$(id -u)/$CR_ANCHOR_LABEL" 2>&1)" && return 0
+  out="$(printf '%s\n' "$out" | awk 'NF { last = $0 } END { print last }')"
+  echo "LaunchAgent $CR_ANCHOR_LABEL nicht gefunden – ohne ihn käme kein neuer Server hoch. Neustart abgebrochen, es wurde nichts beendet."
+  [ -z "$out" ] || echo "launchctl: $out"
+  return 1
+}
+
 # _cr_restart_run <snapshot-file>: the phases of cr_restart_execute, one German progress
-# line each. After the stop it waits (up to 10 s) for the `ok` rows' old pane processes
-# to exit: one still exiting would look like a live holder of its session to the
-# restore (which then fails that row rather than counting it).
+# line each. Before anything is stopped it checks that the anchor LaunchAgent is loaded:
+# it is the only thing that may birth the new server, so without it the restart would
+# end every session and bring nothing back. After the stop it waits (up to 10 s) for the
+# `ok` rows' old pane processes to exit: one still exiting would look like a live holder
+# of its session to the restore (which then fails that row rather than counting it).
 _cr_restart_run() {
   local file=$1 old pids n rc=0
+  _cr_restart_agent_loaded || return 1
   _cr_restart_hint "$file"
   old="$(cr_server_pid)" || old=""
   pids="$(awk -F'\t' '$4 == "ok" { print $2 }' "$file")"
