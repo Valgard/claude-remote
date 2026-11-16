@@ -197,9 +197,51 @@ touch '$BATS_TEST_TMPDIR/kick.called'")"
   [ "$status" -eq 1 ]
   [ "${lines[0]}" = "Snapshot: $f" ]
   [ "${lines[1]}" = "Wiederherstellen: claude-remote-pick --restore $f" ]
-  [ "${lines[2]}" = "Beende Anchor und Server …" ]
-  [ "${lines[3]}" = "Warte auf neuen Server (bis zu 1 s) …" ]
-  [[ "${lines[4]}" == "Anchor/Server kam nicht hoch."* ]]
+  [ "${lines[2]}" = "Bericht: $f.report" ]
+  [ "${lines[3]}" = "Beende Anchor und Server …" ]
+  [ "${lines[4]}" = "Warte auf neuen Server (bis zu 1 s) …" ]
+  [[ "${lines[5]}" == "Anchor/Server kam nicht hoch."* ]]
+}
+
+@test "execute keeps the report in a private file next to the snapshot" {
+  # A dropped SSH channel takes the screen with it; the file keeps what came back.
+  export CR_LAUNCHCTL="$(agent_stub '$CR_TMUX new-session -d -s _cr_anchor')"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  {
+    row proj-11 "$GONE" /tmp ok "" S1 idle "" ""
+    row gone-12 "$GONE" /nonexistent ok "" S2 idle "" ""
+  } >"$f"
+  run cr_restart_execute "$f"
+  [ "$status" -eq 1 ]
+  [ -n "$(find "$f.report" -perm 600)" ]
+  [ "$(head -n 1 "$f.report")" = "Wiederhergestellt: 1 von 2" ]
+  grep -qx '  - gone-12: Startordner fehlt' "$f.report"
+  [[ "$output" == *$'Wiederhergestellt: 1 von 2\nFehlgeschlagen:\n  - gone-12: Startordner fehlt'* ]]
+}
+
+@test "a run that ends before the restore says why in the report file" {
+  export CR_LAUNCHCTL="$(agent_stub 'echo "Bootstrap failed: 5: Input/output error" >&2; exit 37')"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  row proj-11 "$GONE" /tmp ok "" S1 idle "" "" >"$f"
+  CR_ANCHOR_WAIT=1 run cr_restart_execute "$f"
+  [ "$status" -eq 1 ]
+  grep -qx 'launchctl kickstart fehlgeschlagen (Exit 37): Bootstrap failed: 5: Input/output error' "$f.report"
+  grep -q '^Anchor/Server kam nicht hoch\.' "$f.report"
+}
+
+@test "execute never writes its report through a file someone else put there" {
+  # Over SSH the snapshot lives in the shared /tmp, so <snapshot>.report could be
+  # planted as a link while the user reads the summary.
+  export CR_LAUNCHCTL="$(agent_stub '$CR_TMUX new-session -d -s _cr_anchor')"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  printf 'keep me\n' >"$BATS_TEST_TMPDIR/victim"
+  ln -s "$BATS_TEST_TMPDIR/victim" "$f.report"
+  row proj-11 "$GONE" /tmp ok "" S1 idle "" "" >"$f"
+  run cr_restart_execute "$f"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/victim")" = "keep me" ]
+  [[ "$output" == *"Bericht-Datei $f.report ließ sich nicht anlegen – der Bericht erscheint nur hier."* ]]
+  [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
 }
 
 @test "execute announces the restore with the number of sessions" {
@@ -234,6 +276,7 @@ touch '$BATS_TEST_TMPDIR/kick.called'")"
   export CR_TMUX="$real"
   [ "$status" -eq 1 ]
   [[ "$output" == *$'Server ließ sich nicht beenden.\nSnapshot: '"$f"$'\nWiederherstellen: claude-remote-pick --restore '"$f"* ]]
+  grep -qx 'Server ließ sich nicht beenden.' "$f.report"
 }
 
 @test "execute prints the snapshot and hint when a restore fails" {
