@@ -1340,7 +1340,7 @@ cr_ensure_utf8_locale() {
 # Renders a numbered menu on STDERR, reads one choice from stdin, and echoes a
 # selection TOKEN on stdout: a tmux session name, __NEW__, __QUIT__, __RELOAD__
 # (re-fetch the session list), __KILL__<TAB>session (typing k<n> kills entry n),
-# or __NONE__ (invalid input -> caller redraws). Menu lines are "session<TAB>display".
+# __RESTART__ (typing s), or __NONE__ (invalid input -> caller redraws). Menu lines are "session<TAB>display".
 cr_pick_numbered() {
   local footnote="$1"
   shift
@@ -1356,6 +1356,7 @@ cr_pick_numbered() {
     printf "  %2d) ＋ neue Session\n" "$i"
     printf "   r) Aktualisieren\n"
     printf " k<n>) Session beenden\n"
+    printf "   s) Server neu starten (alle Sessions)\n"
     printf "   q) Beenden\n"
     printf "Auswahl: "
   } >&2
@@ -1367,6 +1368,7 @@ cr_pick_numbered() {
   case "$choice" in
     q | Q) echo "__QUIT__" ;;
     r | R) echo "__RELOAD__" ;;
+    s | S) echo "__RESTART__" ;;
     "$newidx") echo "__NEW__" ;;
     [kK][0-9]*)
       # k<n>: kill entry n. Emit a compound __KILL__<TAB>session token so the loop
@@ -1392,7 +1394,8 @@ cr_pick_numbered() {
 # cr_pick_fzf <footnote> <menu-line>...
 # Presents the menu via fzf (interactive, uses /dev/tty), and echoes a selection
 # TOKEN on stdout: a tmux session name, __NEW__, __RELOAD__ (Ctrl-R, re-fetch the
-# list), __KILL__<TAB>session (Ctrl-X on the highlighted session), or __QUIT__
+# list), __KILL__<TAB>session (Ctrl-X on the highlighted session), __RESTART__
+# (Ctrl-T; ctrl-s is avoided because terminals use it as XOFF), or __QUIT__
 # (ESC/cancel). fzf shows only the display column (field 2..); the session key is
 # field 1. With --expect=ctrl-r,ctrl-x, fzf prints the pressed key on line 1 (empty
 # for a plain Enter) and the selected line on line 2 — so Ctrl-X carries the
@@ -1400,20 +1403,22 @@ cr_pick_numbered() {
 cr_pick_fzf() {
   local footnote="$1"
   shift
-  local header="claude-remote — Enter: attach · Ctrl-X: beenden · Ctrl-R: aktualisieren · ESC: beenden"
+  local header="claude-remote — Enter: attach · Ctrl-X: beenden · Ctrl-R: aktualisieren · Ctrl-T: Server neu starten · ESC: beenden"
   [ -n "$footnote" ] && header="${header}"$'\n'"${footnote}"
   local lines=()
   [ "$#" -gt 0 ] && lines=("$@")
   lines+=("__NEW__"$'\t'"＋ neue Session")
   local out key chosen sess
   out="$(printf '%s\n' "${lines[@]}" | fzf --ansi --delimiter=$'\t' --with-nth='2..' \
-    --prompt='Session> ' --header="$header" --reverse --no-multi --expect=ctrl-r,ctrl-x)" || true
+    --prompt='Session> ' --header="$header" --reverse --no-multi --expect=ctrl-r,ctrl-x,ctrl-t)" || true
   {
     IFS= read -r key
     IFS= read -r chosen
   } <<<"$out"
   if [ "$key" = "ctrl-r" ]; then
     echo "__RELOAD__"
+  elif [ "$key" = "ctrl-t" ]; then
+    echo "__RESTART__"
   elif [ "$key" = "ctrl-x" ]; then
     # Kill the highlighted session. Guard: ignore when nothing real is highlighted
     # (empty selection, or the synthetic __NEW__ line when the list is empty) so

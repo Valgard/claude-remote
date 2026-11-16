@@ -115,3 +115,24 @@ STUB
   run bash -c "source '$LIB'; cr_pick_fzf '' \$'sess-one\tproj one' 2>/dev/null"
   [ "$output" = "__NONE__" ]
 }
+
+@test "cr_pick_numbered: s returns __RESTART__ (restart the server)" {
+  run bash -c "source '$LIB'; echo s | cr_pick_numbered '' \$'a\tA' 2>/dev/null"
+  [ "$status" -eq 0 ]
+  [ "$output" = "__RESTART__" ]
+}
+
+@test "cr_pick_numbered lists the restart entry" {
+  run bash -c "source '$LIB'; echo q | cr_pick_numbered '' \$'a\tA' 2>&1 >/dev/null"
+  [[ "$output" == *"s) Server neu starten (alle Sessions)"* ]]
+}
+
+@test "cr_pick_fzf returns __RESTART__ when the restart key is pressed" {
+  stub="$(mktemp -d)"
+  printf '#!/bin/bash\nprintf '\''ctrl-t\\n'\''\n' >"$stub/fzf"
+  chmod +x "$stub/fzf"
+  export PATH="$stub:$PATH"
+  run bash -c "source '$LIB'; cr_pick_fzf '' \$'sess-one\tproj one' 2>/dev/null"
+  [ "$status" -eq 0 ]
+  [ "$output" = "__RESTART__" ]
+}

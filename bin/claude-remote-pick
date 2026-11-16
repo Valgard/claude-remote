@@ -136,6 +136,31 @@ while true; do
           ;;
       esac
       ;;
+    __RESTART__)
+      # Restart anchor + tmux server and restore every Claude session. All reads
+      # come from fd 0 like the kill confirm. The snapshot is written BEFORE
+      # anything is stopped and removed again when the user declines.
+      if cr_restart_inside_server; then
+        echo "Neustart geht nicht aus einer Session dieses Servers – bitte aus einem normalen Terminal oder vom iPad starten."
+        continue
+      fi
+      snap="${CR_RESTART_DIR%/}/claude-remote-restart-$(date +%Y%m%d-%H%M%S).tsv"
+      if ! cr_restart_snapshot >"$snap"; then
+        rm -f "$snap"
+        echo "Kein tmux-Server läuft."
+        continue
+      fi
+      cr_restart_summary "$snap"
+      read -r -p 'Anchor und Server jetzt neu starten? [j/N] ' yn || yn=""
+      case "$yn" in
+        j | J | y | Y)
+          cr_restart_execute "$snap"
+          # The report must survive fzf's alternate-screen redraw.
+          read -r -p 'Weiter mit Enter ' _ || true
+          ;;
+        *) rm -f "$snap" ;;
+      esac
+      ;;
     *)
       # Re-attach to a running session: arm capture (it may predate this feature
       # or have been started outside claude-remote), attach, drain, wait — same
