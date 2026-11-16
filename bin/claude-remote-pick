@@ -23,6 +23,18 @@ if [ "${1:-}" = "--list" ]; then
   exit 0
 fi
 
+# --restore <file>: relaunch the sessions of a restart snapshot into the running anchor
+# server (the retry path after a restart whose restore step did not finish).
+if [ "${1:-}" = "--restore" ]; then
+  # shellcheck disable=SC2086
+  if ! $CR_TMUX has-session -t "$CR_ANCHOR" 2>/dev/null; then
+    echo "Kein Anchor-Server läuft."
+    exit 1
+  fi
+  cr_restore_sessions "${2:?--restore braucht eine Snapshot-Datei}"
+  exit $?
+fi
+
 # --ensure-anchor: create the hidden holding session that keeps the tmux server
 # alive in a keychain-capable (Aqua) launchd namespace, then exit. Invoked by the
 # install.sh LaunchAgent at GUI login. Runs after cr_augment_path, so tmux resolves

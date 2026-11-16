@@ -26,6 +26,9 @@ cr_setup() {
   # Never reach the real anchor: pgrep/launchctl are pinned to `true`; tests that need a
   # working one install a `stub`. CR_ANCHOR_WAIT keeps the give-up path short.
   export CR_PGREP=true CR_LAUNCHCTL=true CR_ANCHOR_WAIT=2
+  # Restart state (snapshot dir) stays in the test's tmp dir; the post-launch settle
+  # is 1 s so the restore tests stay quick.
+  export CR_RESTART_DIR="$BATS_TEST_TMPDIR" CR_RESTORE_SETTLE=1
   # Inject a stub named `claude` ahead of the real one on PATH. The isolated
   # tmux server started below inherits this PATH and resolves `claude` to the stub.
   STUB_BIN="${BATS_TEST_TMPDIR}/bin"

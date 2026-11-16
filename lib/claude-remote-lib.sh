@@ -17,6 +17,10 @@
 # Seconds cr_start_anchor waits for the replacement server; must exceed the
 # LaunchAgent's StartInterval (CR_ANCHOR_INTERVAL, 60) so one retry tick fits.
 : "${CR_ANCHOR_WAIT:=90}"
+# Where the restart snapshot is kept, and how long (seconds) cr_restore_sessions waits
+# after launching before it checks which sessions died at once.
+: "${CR_RESTART_DIR:=${TMPDIR:-/tmp}}"
+: "${CR_RESTORE_SETTLE:=3}"
 # Claude Code writes its session title into the terminal title, prefixed with a
 # status glyph (U+2733 + space), and uses a fixed placeholder while no title is
 # set. Both are Claude Code's format, not ours — hence the seams: if either ever
@@ -631,6 +635,107 @@ cr_restart_summary() {
       if (lost != "") printf "Nicht wiederherstellbar:\n%s", lost
     }
   ' "$1"
+}
+
+# cr_restore_sessions <snapshot-file>: relaunch every `ok` row, in file order, as
+# `claude <kept flags> --resume <session_id>` in the row's start dir under its old label
+# (cr_launch appends the new pid). The rows are split by parameter expansion, never
+# `read` with a tab IFS: tab is IFS whitespace, so empty columns (reason, last_cwd,
+# args) would collapse and shift the rest. A row whose start dir is gone fails alone.
+# After one $CR_RESTORE_SETTLE sleep every launched session that no longer exists is
+# reported as having exited at once, with the first line it left behind. Report on
+# stdout (German; empty sections omitted). Returns 0 iff every `ok` row was restored.
+cr_restore_sessions() {
+  local file=$1 rows line rest name start sid args label new tok mark
+  local total=0 restored=0 failed="" dropped="" launched="" old_name new_name cap
+  local kept drop
+  rows="$(awk -F'\t' '$4 == "ok"' "$file")" || return 1
+  if [ -n "$rows" ]; then
+    while IFS= read -r line; do
+      total=$((total + 1))
+      rest=$line
+      name=${rest%%$'\t'*}
+      rest=${rest#*$'\t'} # pid
+      rest=${rest#*$'\t'}
+      start=${rest%%$'\t'*}
+      rest=${rest#*$'\t'} # verdict
+      rest=${rest#*$'\t'} # reason
+      rest=${rest#*$'\t'}
+      sid=${rest%%$'\t'*}
+      rest=${rest#*$'\t'} # status
+      rest=${rest#*$'\t'} # last_cwd
+      rest=${rest#*$'\t'}
+      args=$rest
+      if [ ! -d "$start" ]; then
+        failed="${failed}  - ${name}: Startordner fehlt"$'\n'
+        continue
+      fi
+      # The args column is the space-joined `ps` args: split on spaces, no globbing.
+      set -f
+      # shellcheck disable=SC2086
+      set -- $args
+      set +f
+      kept=()
+      drop=""
+      while IFS= read -r tok; do
+        mark=${tok%%$'\t'*}
+        tok=${tok#*$'\t'}
+        if [ "$mark" = "+" ]; then
+          kept[${#kept[@]}]=$tok
+        else
+          drop="${drop:+$drop }$tok"
+        fi
+      done < <(cr_rewrite_claude_args "$sid" "$@")
+      [ -z "$drop" ] || dropped="${dropped}  - ${name}: ${drop}"$'\n'
+      label="$(cr_session_label "$name")"
+      if new="$(cd "$start" && cr_launch "$label" 0 0 -- "${kept[@]}" </dev/null)" && [ -n "$new" ]; then
+        launched="${launched}${name}"$'\t'"${new}"$'\n'
+      else
+        failed="${failed}  - ${name}: Start fehlgeschlagen"$'\n'
+      fi
+    done <<<"$rows"
+  fi
+  if [ -n "$launched" ]; then
+    sleep "$CR_RESTORE_SETTLE"
+    while IFS=$'\t' read -r old_name new_name; do
+      [ -n "$new_name" ] || continue
+      # shellcheck disable=SC2086
+      if $CR_TMUX has-session -t "=$new_name" 2>/dev/null; then
+        restored=$((restored + 1))
+      else
+        cap="$(cr_drain_exit_output "$new_name" 2>/dev/null | awk 'NF { print; exit }')"
+        failed="${failed}  - ${old_name}: beendete sich sofort${cap:+: $cap}"$'\n'
+      fi
+    done <<<"$launched"
+  fi
+  printf 'Wiederhergestellt: %d von %d\n' "$restored" "$total"
+  [ -z "$failed" ] || printf 'Fehlgeschlagen:\n%s' "$failed"
+  [ -z "$dropped" ] || printf 'Weggelassene Argumente:\n%s' "$dropped"
+  [ "$restored" -eq "$total" ]
+}
+
+# cr_restart_execute <snapshot-file>: stop the anchor supervisor(s) and the server, let
+# the LaunchAgent birth a fresh anchor (it is the only thing that may birth the server),
+# then restore the sessions from the snapshot. Every failure prints what to run to
+# retry once a server is up. Returns 0 only when everything came back.
+cr_restart_execute() {
+  local file=$1 old rc
+  old="$(cr_server_pid)" || old=""
+  if ! cr_stop_anchor_and_server; then
+    echo "Server ließ sich nicht beenden."
+    return 1
+  fi
+  if ! cr_start_anchor "$old"; then
+    echo "Anchor/Server kam nicht hoch. Wiederherstellen, sobald er läuft: claude-remote-pick --restore $file"
+    return 1
+  fi
+  rc=0
+  cr_restore_sessions "$file" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "Snapshot: $file"
+    echo "Wiederherstellen: claude-remote-pick --restore $file"
+  fi
+  return "$rc"
 }
 
 # cr_restart_inside_server: succeeds iff this shell runs inside the tmux server that
