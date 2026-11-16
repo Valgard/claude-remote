@@ -364,6 +364,63 @@ cr_ensure_anchor() {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
 }
 
+# --- server restart ---------------------------------------------------------------
+
+# Launch flags that stay as they are when a session is relaunched after a server
+# restart (the allowlist; everything else is dropped).
+CR_KEEP_FLAGS="--allow-dangerously-skip-permissions --dangerously-skip-permissions --brief --chrome --no-chrome --ide --verbose --ax-screen-reader --strict-mcp-config --disable-slash-commands --bare --safe-mode --restricted"
+# Allowlisted flags that take a value; kept together with the next token.
+CR_KEEP_VALUE_FLAGS="--model --fallback-model --effort --permission-mode --agent --autocompact --setting-sources --system-prompt-snapshot"
+
+# cr_session_label <session_name>: the name without its trailing -<digits> (pid) suffix.
+cr_session_label() {
+  local name=$1
+  case $name in
+    *-[0-9]*) ;;
+    *) printf '%s\n' "$name" && return 0 ;;
+  esac
+  local tail=${name##*-}
+  case $tail in
+    '' | *[!0-9]*) printf '%s\n' "$name" ;;
+    *) printf '%s\n' "${name%-*}" ;;
+  esac
+}
+
+# cr_rewrite_claude_args <session_id> [<arg>...]: classify each launch token as kept
+# (+<TAB>token) or dropped (-<TAB>token), in input order, then append the exact
+# `--resume <session_id>`. Only allowlisted flags survive; positional prompts, resume/
+# continue/name/worktree and variadic flags are dropped.
+cr_rewrite_claude_args() {
+  local sid=$1 tok flag
+  shift
+  while [ $# -gt 0 ]; do
+    tok=$1
+    shift
+    flag=${tok%%=*}
+    case " $CR_KEEP_FLAGS " in
+      *" $tok "*)
+        printf '+\t%s\n' "$tok"
+        continue
+        ;;
+    esac
+    case " $CR_KEEP_VALUE_FLAGS " in
+      *" $flag "*)
+        if [ "$flag" != "$tok" ]; then
+          printf '+\t%s\n' "$tok"
+        elif [ $# -gt 0 ]; then
+          printf '+\t%s\n+\t%s\n' "$tok" "$1"
+          shift
+        else
+          printf -- '-\t%s\n' "$tok"
+        fi
+        continue
+        ;;
+    esac
+    printf -- '-\t%s\n' "$tok"
+  done
+  printf '+\t--resume\n+\t%s\n' "$sid"
+}
+
 # cr_reverse_lines <file>: emit the file's lines last-to-first.
 # Prefers GNU tac, falls back to macOS' BSD `tail -r` addressed by ABSOLUTE path —
 # a bare `tail` here may well be GNU coreutils from Homebrew, which has no -r.
