@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Stand-in for `ps`: handles exactly `-o args= -p PID` and `-o lstart= -p PID` by
 # printing $FAKE_PS_DIR/PID.args or PID.lstart; exits 1 if that file is missing.
+# FAKE_PS_LIVE=1 makes it answer only while PID is alive, like the real ps does — for
+# tests whose pids are processes they started themselves (never set it with made-up pids).
 if [ "$#" -eq 4 ] && [ "$1" = "-o" ] && [ "$3" = "-p" ]; then
   case $2 in
     args=) ext=args ;;
     lstart=) ext=lstart ;;
     *) exit 2 ;;
   esac
+  if [ -n "${FAKE_PS_LIVE:-}" ]; then
+    kill -0 "$4" 2>/dev/null || exit 1
+  fi
   f="${FAKE_PS_DIR}/$4.${ext}"
   [ -f "$f" ] || exit 1
   cat "$f"
