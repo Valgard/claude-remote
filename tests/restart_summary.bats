@@ -44,3 +44,27 @@ teardown() { cr_teardown; }
   run env -u TMUX bash -c "source '${REPO_ROOT}/lib/claude-remote-lib.sh'; CR_TMUX='$CR_TMUX'; cr_restart_inside_server"
   [ "$status" -ne 0 ]
 }
+
+@test "guard: production shape (no -L) asks the target server, not the one named by TMUX" {
+  # CR_TMUX without -L/-S resolves its socket from $TMUX when that is set, so the
+  # guard must query with TMUX removed. Isolate the DEFAULT socket via TMUX_TMPDIR.
+  # (Short /tmp path: BATS_TEST_TMPDIR is too long for a unix socket on macOS.)
+  export TMUX_TMPDIR
+  TMUX_TMPDIR="$(mktemp -d /tmp/crtd.XXXXXX)"
+  unset TMUX
+  local prod="tmux -f /dev/null" other="tmux -f /dev/null -L other_$$" tsock osock
+  $prod new-session -d -s target
+  $other new-session -d -s other
+  tsock="$($prod display-message -p '#{socket_path}')"
+  osock="$(env -u TMUX $other display-message -p '#{socket_path}')"
+  local lib="${REPO_ROOT}/lib/claude-remote-lib.sh"
+  run env TMUX="$osock,1,0" bash -c "source '$lib'; CR_TMUX='$prod'; cr_restart_inside_server"
+  local st_other=$status
+  run env TMUX="$tsock,1,0" bash -c "source '$lib'; CR_TMUX='$prod'; cr_restart_inside_server"
+  local st_self=$status
+  $other kill-server || true
+  $prod kill-server || true
+  rm -rf "$TMUX_TMPDIR"
+  [ "$st_other" -ne 0 ]
+  [ "$st_self" -eq 0 ]
+}

@@ -562,7 +562,9 @@ cr_restart_inside_server() {
   local sock
   [ -n "${TMUX:-}" ] || return 1
   # shellcheck disable=SC2086
-  sock="$($CR_TMUX display-message -p '#{socket_path}' 2>/dev/null)" || return 1
+  # TMUX removed: a plain `tmux` resolves its socket from $TMUX when set, which would
+  # make this report the CALLER's server instead of the target one.
+  sock="$(env -u TMUX $CR_TMUX display-message -p '#{socket_path}' 2>/dev/null)" || return 1
   [ -n "$sock" ] && [ "${TMUX%%,*}" = "$sock" ]
 }
 
