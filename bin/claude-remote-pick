@@ -140,28 +140,27 @@ while true; do
     __RESTART__)
       # Restart anchor + tmux server and restore every Claude session. All reads
       # come from fd 0 like the kill confirm. The snapshot is written BEFORE
-      # anything is stopped and removed again when the user declines.
+      # anything is stopped and removed again when the user declines. Every message
+      # that ends this case pauses: fzf's alternate-screen redraw would wipe it.
       if cr_restart_inside_server; then
         echo "Neustart geht nicht aus einer Session dieses Servers – bitte aus einem normalen Terminal oder vom iPad starten."
         read -r -p 'Weiter mit Enter ' _ || true
         continue
       fi
-      snap="${CR_RESTART_DIR%/}/claude-remote-restart-$(date +%Y%m%d-%H%M%S).tsv"
-      if ! cr_restart_snapshot >"$snap"; then
-        rm -f "$snap"
-        echo "Kein tmux-Server läuft."
+      # No server, or no writable snapshot file: the function names which.
+      if ! snap="$(cr_restart_snapshot_file)"; then
         read -r -p 'Weiter mit Enter ' _ || true
         continue
       fi
-      cr_restart_summary "$snap"
-      read -r -p 'Anchor und Server jetzt neu starten? [j/N] ' yn || yn=""
-      case "$yn" in
-        j | J | y | Y)
-          cr_restart_execute "$snap"
-          # The report must survive fzf's alternate-screen redraw.
+      # Summary, [j/N], and a re-check against a fresh snapshot after "j".
+      rc=0
+      cr_restart_confirm "$snap" || rc=$?
+      case "$rc" in
+        0)
+          cr_restart_execute "$CR_RESTART_SNAP"
           read -r -p 'Weiter mit Enter ' _ || true
           ;;
-        *) rm -f "$snap" ;;
+        2) read -r -p 'Weiter mit Enter ' _ || true ;; # the fresh snapshot failed
       esac
       ;;
     *)

@@ -104,3 +104,44 @@ mk() {
   run cr_restart_snapshot
   [ "$status" -eq 1 ]
 }
+
+# Snapshot files left in CR_RESTART_DIR (the suite's per-test tmp dir).
+snapshots() { find "$CR_RESTART_DIR" -maxdepth 1 -name 'claude-remote-restart-*'; }
+
+@test "the snapshot file is private, unpredictably named and holds the snapshot" {
+  mk proj-1 /tmp "--brief" S1
+  run cr_restart_snapshot_file
+  [ "$status" -eq 0 ]
+  [[ "$output" == "$CR_RESTART_DIR/claude-remote-restart-"?????? ]]
+  [ -n "$(find "$output" -perm 600)" ]
+  [ "$(cut -f1,4,6 "$output")" = $'proj-1\tok\tS1' ]
+}
+
+@test "snapshot file: no server says so and leaves nothing behind" {
+  run cr_restart_snapshot_file
+  [ "$status" -eq 1 ]
+  [ "$output" = "Kein tmux-Server läuft." ]
+  [ -z "$(snapshots)" ]
+}
+
+@test "snapshot file: an unusable snapshot dir names that cause, not a missing server" {
+  mk proj-1 /tmp "" S1
+  CR_RESTART_DIR="$BATS_TEST_TMPDIR/missing" run cr_restart_snapshot_file
+  [ "$status" -eq 2 ]
+  [ "$output" = "Snapshot-Datei in $BATS_TEST_TMPDIR/missing konnte nicht geschrieben werden – es wurde nichts beendet." ]
+  [[ "$output" != *"Kein tmux-Server"* ]]
+}
+
+@test "snapshot file: a file that cannot be written is removed and named as the cause" {
+  mk proj-1 /tmp "" S1
+  # A mktemp that hands out a read-only file, so only the write can fail. Scoped to a
+  # child shell: bats itself calls mktemp.
+  local mt="$BATS_TEST_TMPDIR/mt"
+  mkdir -p "$mt"
+  printf '%s\n' '#!/usr/bin/env bash' 'f="$1"; f="${f%XXXXXX}ro"; : >"$f"; chmod 400 "$f"; printf "%s\n" "$f"' >"$mt/mktemp"
+  chmod +x "$mt/mktemp"
+  run bash -c "PATH='$mt':\$PATH; source '${REPO_ROOT}/lib/claude-remote-lib.sh'; cr_restart_snapshot_file"
+  [ "$status" -eq 2 ]
+  [ "$output" = "Snapshot-Datei in $CR_RESTART_DIR konnte nicht geschrieben werden – es wurde nichts beendet." ]
+  [ -z "$(snapshots)" ]
+}

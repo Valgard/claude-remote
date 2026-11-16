@@ -658,6 +658,76 @@ cr_restart_summary() {
   ' "$1"
 }
 
+# cr_restart_snapshot_file: take a restart snapshot into a new file under
+# $CR_RESTART_DIR and print its path. mktemp makes it 0600 with an unpredictable name
+# (over SSH TMPDIR is often unset, so this is the shared /tmp). On failure it prints
+# the German cause on stderr, leaves no file behind and returns 1 when no server runs
+# or 2 when the file cannot be created or written — two causes with two fixes, so
+# they must not share one message.
+cr_restart_snapshot_file() {
+  local rows="" snap=""
+  if ! rows="$(cr_restart_snapshot)"; then
+    echo "Kein tmux-Server läuft." >&2
+    return 1
+  fi
+  if ! snap="$(mktemp "${CR_RESTART_DIR%/}/claude-remote-restart-XXXXXX" 2>/dev/null)" ||
+    { [ -n "$rows" ] && ! { printf '%s\n' "$rows" >"$snap"; } 2>/dev/null; }; then
+    [ -z "$snap" ] || rm -f "$snap"
+    echo "Snapshot-Datei in ${CR_RESTART_DIR%/} konnte nicht geschrieben werden – es wurde nichts beendet." >&2
+    return 2
+  fi
+  printf '%s\n' "$snap"
+}
+
+# cr_restart_same_sessions <snapshot-a> <snapshot-b>: 0 iff both list the same set of
+# session names (column 1, order ignored).
+cr_restart_same_sessions() {
+  [ "$(awk -F'\t' '{ print $1 }' "$1" | LC_ALL=C sort)" = "$(awk -F'\t' '{ print $1 }' "$2" | LC_ALL=C sort)" ]
+}
+
+# cr_restart_confirm <snapshot-file>: the confirmation dialogue. Shows the summary and
+# asks [j/N], default No, reading fd 0 like the kill confirm. A "j" is checked against
+# a FRESH snapshot, because the user's reading time is a window in which sessions start
+# or end: one started meanwhile would be killed without having been named. When the set
+# of session names differs, a notice and the new summary are shown and the question
+# repeats. On a final "j" CR_RESTART_SNAP names the snapshot to execute with (the
+# freshest one; an out-variable, because the dialogue itself owns stdout) and 0 is
+# returned. Otherwise no snapshot file is left behind: 1 when declined, 2 when the fresh
+# snapshot failed (its cause is printed).
+cr_restart_confirm() {
+  local snap=$1 fresh="" yn="" rc same
+  CR_RESTART_SNAP=""
+  cr_restart_summary "$snap"
+  while :; do
+    read -r -p 'Anchor und Server jetzt neu starten? [j/N] ' yn || yn=""
+    case "$yn" in
+      j | J | y | Y) ;;
+      *)
+        rm -f "$snap"
+        return 1
+        ;;
+    esac
+    rc=0
+    fresh="$(cr_restart_snapshot_file)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      rm -f "$snap"
+      return 2
+    fi
+    same=0
+    cr_restart_same_sessions "$snap" "$fresh" && same=1
+    rm -f "$snap"
+    snap=$fresh
+    if [ "$same" -eq 1 ]; then
+      # SC2034: read by the caller (bin/claude-remote-pick), not in this file.
+      # shellcheck disable=SC2034
+      CR_RESTART_SNAP=$snap
+      return 0
+    fi
+    echo "Die Sessions haben sich seit der Übersicht geändert:"
+    cr_restart_summary "$snap"
+  done
+}
+
 # _cr_session_live <session_id>: print the pid of a LIVE process holding that session id
 # and succeed, i.e. some $CR_SESSIONS_DIR/<pid>.json names it and <pid> still started at
 # the recorded procStart (the pid-reuse guard); return 1 when none does. Keeps a
