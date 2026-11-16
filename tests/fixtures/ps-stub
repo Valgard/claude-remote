@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Stand-in for `ps`: handles exactly `-o args= -p PID` and `-o lstart= -p PID` by
+# printing $FAKE_PS_DIR/PID.args or PID.lstart; exits 1 if that file is missing.
+if [ "$#" -eq 4 ] && [ "$1" = "-o" ] && [ "$3" = "-p" ]; then
+  case $2 in
+    args=) ext=args ;;
+    lstart=) ext=lstart ;;
+    *) exit 2 ;;
+  esac
+  f="${FAKE_PS_DIR}/$4.${ext}"
+  [ -f "$f" ] || exit 1
+  cat "$f"
+  exit 0
+fi
+exit 2

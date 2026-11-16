@@ -9,6 +9,8 @@
 : "${CR_NEW_DIR:=~/Projects}"
 : "${CR_PROJECTS_DIR:=${HOME:-~}/.claude/projects}"
 : "${CR_TAC:=tac}"
+: "${CR_SESSIONS_DIR:=${HOME:-~}/.claude/sessions}"
+: "${CR_PS:=ps}"
 # Claude Code writes its session title into the terminal title, prefixed with a
 # status glyph (U+2733 + space), and uses a fixed placeholder while no title is
 # set. Both are Claude Code's format, not ours — hence the seams: if either ever
@@ -419,6 +421,65 @@ cr_rewrite_claude_args() {
     printf -- '-\t%s\n' "$tok"
   done
   printf '+\t--resume\n+\t%s\n' "$sid"
+}
+
+# cr_session_record <pid>: one line `session_id<TAB>kind<TAB>status<TAB>proc_start` from
+# $CR_SESSIONS_DIR/<pid>.json. A missing or non-string field is empty and control
+# characters are flattened to spaces (as in cr_session_title), so a tab cannot tear the
+# record. Returns 1 if the file is missing, 2 if it is not a JSON object.
+cr_session_record() {
+  local f="${CR_SESSIONS_DIR}/$1.json" out
+  [ -f "$f" ] || return 1
+  out="$(jq -r 'select(type == "object")
+                | [.sessionId, .kind, .status, .procStart]
+                | map(if type == "string" then gsub("[[:cntrl:]]"; " ") else "" end)
+                | join("\t")' "$f" 2>/dev/null)" || return 2
+  [ -n "$out" ] || return 2
+  printf '%s\n' "$out"
+}
+
+# cr_proc_start_matches <pid> <proc_start>: 0 iff the process' start time equals the
+# recorded one. The session file's procStart is UTC in `ps -o lstart` format; ps pads a
+# single-digit day with an extra space, so both sides are squeezed and right-trimmed.
+# This is the pid-reuse guard: a stale session file whose pid now belongs to another
+# process started at another time.
+cr_proc_start_matches() {
+  local have want
+  have="$(LC_ALL=C TZ=UTC "$CR_PS" -o lstart= -p "$1" 2>/dev/null | tr -s ' ')" || return 1
+  want="$(printf '%s' "$2" | tr -s ' ')"
+  have="${have%"${have##*[! ]}"}"
+  want="${want%"${want##*[! ]}"}"
+  [ -n "$have" ] && [ "$have" = "$want" ]
+}
+
+# cr_proc_claude_args <pid>: the words after argv0 of the process' command line,
+# space-joined (possibly empty). Returns 1 if ps fails or argv0 is not `claude`.
+cr_proc_claude_args() {
+  local line argv0 rest
+  line="$("$CR_PS" -o args= -p "$1" 2>/dev/null)" || return 1
+  line="${line#"${line%%[! ]*}"}"
+  argv0="${line%% *}"
+  [ "${argv0##*/}" = "claude" ] || return 1
+  case $line in
+    *' '*) rest="${line#* }" ;;
+    *) rest="" ;;
+  esac
+  printf '%s\n' "$(printf '%s' "$rest" | tr -s ' ')"
+}
+
+# cr_last_cwd <transcript.jsonl>: the cwd of the transcript's most recent record ("" if
+# none). Read exactly like cr_session_title: backwards, grep prefilter, jq -R with
+# fromjson?. -m3 rather than -m1 because a transcript being appended to right now ends
+# mid-line and that fragment is glued onto the front of the previous line, so the first
+# hit may be unparsable; the older hits carry the same session's cwd.
+cr_last_cwd() {
+  local f="$1"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  cr_reverse_lines "$f" 2>/dev/null |
+    grep -m3 '"cwd":"' 2>/dev/null |
+    jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null |
+    head -n 1
+  return 0
 }
 
 # cr_reverse_lines <file>: emit the file's lines last-to-first.

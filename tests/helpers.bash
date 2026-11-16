@@ -16,6 +16,10 @@ cr_setup() {
   # as no fixture carries a session_id — pin it here rather than per test file.
   export CR_PROJECTS_DIR="${BATS_TEST_TMPDIR}/projects"
   mkdir -p "$CR_PROJECTS_DIR"
+  # Session files and `ps` for the restart readers: a sessions dir plus a ps stub that
+  # serves canned answers from $FAKE_PS_DIR/<pid>.{args,lstart}.
+  export CR_SESSIONS_DIR="${BATS_TEST_TMPDIR}/sessions" CR_PS="${REPO_ROOT}/tests/fixtures/ps-stub" FAKE_PS_DIR="${BATS_TEST_TMPDIR}/ps"
+  mkdir -p "$CR_SESSIONS_DIR" "$FAKE_PS_DIR"
   # Pin the launch seam to direct exec so the suite never sources the real
   # ~/.zshrc (CR_LOGIN_SHELL=1 would run `zsh -lic` in the pane). Hermetic.
   export CR_LOGIN_SHELL=0
