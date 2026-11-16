@@ -6,7 +6,8 @@ setup() {
   source "$REPO_ROOT/lib/claude-remote-lib.sh"
 }
 teardown() {
-  [ -z "${sup:-}" ] || kill "$sup" 2>/dev/null || true
+  # KILL, not TERM: the "ignore" stand-in survives TERM. Only ever our own pid.
+  [ -z "${sup:-}" ] || kill -KILL "$sup" 2>/dev/null || true
   cr_teardown
 }
 
@@ -16,25 +17,37 @@ teardown() {
 }
 
 # Supervisor stand-in: a bash script (so its trap can run tmux) that loops on short
-# sleeps. $1 = TERM behaviour: "record" notes whether the suite's server is still up
-# when TERM arrives (into $2), "ignore" swallows TERM.
+# sleeps and touches $BATS_TEST_TMPDIR/ready AFTER installing its trap. $1 = TERM
+# behaviour: "record" notes whether the suite's server is still up when TERM arrives
+# (into $2) and exits; "ignore" notes each TERM into $2 and carries on.
 make_supervisor() {
-  local f="$BATS_TEST_TMPDIR/supervisor.sh"
+  local f="$BATS_TEST_TMPDIR/supervisor.sh" ready="$BATS_TEST_TMPDIR/ready"
   if [ "$1" = record ]; then
     printf '%s\n' '#!/usr/bin/env bash' \
-      "trap '$CR_TMUX has-session -t _cr_anchor 2>/dev/null && echo alive >\"$2\" || echo dead >\"$2\"; exit 0' TERM" \
-      'while :; do sleep 1; done' >"$f"
+      "trap '$CR_TMUX has-session -t _cr_anchor 2>/dev/null && echo alive >\"$2\" || echo dead >\"$2\"; exit 0' TERM"
   else
-    printf '%s\n' '#!/usr/bin/env bash' "trap '' TERM" 'while :; do sleep 1; done' >"$f"
-  fi
+    printf '%s\n' '#!/usr/bin/env bash' "trap 'echo ignored >>\"$2\"' TERM"
+  fi >"$f"
+  printf '%s\n' "touch \"$ready\"" 'while :; do sleep 1; done' >>"$f"
   chmod +x "$f"
   printf '%s\n' "$f"
+}
+
+# Block (max 5 s) until the stand-in has installed its trap.
+wait_ready() {
+  local i=0
+  while [ ! -e "$BATS_TEST_TMPDIR/ready" ] && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$BATS_TEST_TMPDIR/ready" ]
 }
 
 @test "stop signals the supervisor while the server still runs, then kills the server" {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   "$(make_supervisor record "$BATS_TEST_TMPDIR/order")" 3>&- &
   sup=$!
+  wait_ready
   export CR_PGREP="$(stub pgrep "echo $sup")"
   run cr_stop_anchor_and_server
   [ "$status" -eq 0 ]
@@ -47,11 +60,14 @@ make_supervisor() {
 
 @test "stop escalates to KILL for a supervisor that ignores TERM" {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
-  "$(make_supervisor ignore)" 3>&- &
+  "$(make_supervisor ignore "$BATS_TEST_TMPDIR/termlog")" 3>&- &
   sup=$!
+  wait_ready
   export CR_PGREP="$(stub pgrep "echo $sup")"
   run cr_stop_anchor_and_server
   [ "$status" -eq 0 ]
+  # TERM was delivered and survived (the handler ran), so only KILL can have ended it.
+  grep -q ignored "$BATS_TEST_TMPDIR/termlog"
   run kill -0 "$sup"
   [ "$status" -ne 0 ]
   run $CR_TMUX list-sessions
