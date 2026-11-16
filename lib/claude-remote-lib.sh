@@ -637,18 +637,44 @@ cr_restart_summary() {
   ' "$1"
 }
 
+# _cr_session_live <session_id>: succeed iff a LIVE process holds that session id, i.e.
+# some $CR_SESSIONS_DIR/<pid>.json names it and <pid> still started at the recorded
+# procStart (the pid-reuse guard). Keeps a restore from running a second
+# `claude --resume` on a transcript that a running process already writes.
+_cr_session_live() {
+  local f pid rec rsid rest pstart
+  for f in "$CR_SESSIONS_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    pid=${f##*/}
+    pid=${pid%.json}
+    rec="$(cr_session_record "$pid")" || continue
+    rsid=${rec%%$'\t'*}
+    [ "$rsid" = "$1" ] || continue
+    rest=${rec#*$'\t'}  # kind
+    rest=${rest#*$'\t'} # status
+    pstart=${rest#*$'\t'}
+    cr_proc_start_matches "$pid" "$pstart" && return 0
+  done
+  return 1
+}
+
 # cr_restore_sessions <snapshot-file>: relaunch every `ok` row, in file order, as
 # `claude <kept flags> --resume <session_id>` in the row's start dir under its old label
 # (cr_launch appends the new pid). The rows are split by parameter expansion, never
 # `read` with a tab IFS: tab is IFS whitespace, so empty columns (reason, last_cwd,
 # args) would collapse and shift the rest. A row whose start dir is gone fails alone.
+# A row whose session id a live process already holds is not launched again (counted as
+# restored, listed as already active). Before EVERY launch the anchor session must
+# exist: cr_launch's new-session would otherwise birth a server outside the anchor, so
+# once it is gone that row and all remaining ones fail (`kein Anchor-Server`).
 # After one $CR_RESTORE_SETTLE sleep every launched session that no longer exists is
-# reported as having exited at once, with the first line it left behind. Report on
+# reported as having exited at once, with the LAST non-empty line it left behind
+# (Claude's own; a login shell can put .zshrc output before it). Report on
 # stdout (German; empty sections omitted). Returns 0 iff every `ok` row was restored.
 cr_restore_sessions() {
   local file=$1 rows line rest name start sid args label new tok mark
   local total=0 restored=0 failed="" dropped="" launched="" old_name new_name cap
-  local kept drop
+  local kept drop active="" noanchor=0
   rows="$(awk -F'\t' '$4 == "ok"' "$file")" || return 1
   if [ -n "$rows" ]; then
     while IFS= read -r line; do
@@ -666,8 +692,23 @@ cr_restore_sessions() {
       rest=${rest#*$'\t'} # last_cwd
       rest=${rest#*$'\t'}
       args=$rest
+      if [ "$noanchor" -eq 1 ]; then
+        failed="${failed}  - ${name}: kein Anchor-Server"$'\n'
+        continue
+      fi
+      if _cr_session_live "$sid"; then
+        restored=$((restored + 1))
+        active="${active}  - ${name}"$'\n'
+        continue
+      fi
       if [ ! -d "$start" ]; then
         failed="${failed}  - ${name}: Startordner fehlt"$'\n'
+        continue
+      fi
+      # shellcheck disable=SC2086
+      if ! $CR_TMUX has-session -t "=$CR_ANCHOR" 2>/dev/null; then
+        noanchor=1
+        failed="${failed}  - ${name}: kein Anchor-Server"$'\n'
         continue
       fi
       # The args column is the space-joined `ps` args: split on spaces, no globbing.
@@ -703,13 +744,14 @@ cr_restore_sessions() {
       if $CR_TMUX has-session -t "=$new_name" 2>/dev/null; then
         restored=$((restored + 1))
       else
-        cap="$(cr_drain_exit_output "$new_name" 2>/dev/null | awk 'NF { print; exit }')"
+        cap="$(cr_drain_exit_output "$new_name" 2>/dev/null | awk 'NF { last = $0 } END { print last }')"
         failed="${failed}  - ${old_name}: beendete sich sofort${cap:+: $cap}"$'\n'
       fi
     done <<<"$launched"
   fi
   printf 'Wiederhergestellt: %d von %d\n' "$restored" "$total"
   [ -z "$failed" ] || printf 'Fehlgeschlagen:\n%s' "$failed"
+  [ -z "$active" ] || printf 'Bereits aktiv (nicht doppelt gestartet):\n%s' "$active"
   [ -z "$dropped" ] || printf 'Weggelassene Argumente:\n%s' "$dropped"
   [ "$restored" -eq "$total" ]
 }

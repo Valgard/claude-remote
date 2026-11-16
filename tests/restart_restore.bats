@@ -62,8 +62,8 @@ row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   [[ "$output" != *"skipme"* ]]
 }
 
-@test "a session that exits at once is reported with its last line" {
-  export FAKE_CLAUDE_EXIT_LINES='\nNo conversation found\n' CR_EXIT_DIR="$BATS_TEST_TMPDIR/exit"
+@test "a session that exits at once is reported with the last line of its output" {
+  export FAKE_CLAUDE_EXIT_LINES='noise from zshrc\nNo conversation found\n' CR_EXIT_DIR="$BATS_TEST_TMPDIR/exit"
   CR_RESTORE_SETTLE=3
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   row proj-11 11 /tmp ok "" S1 idle "" "" >"$f"
@@ -129,4 +129,50 @@ row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   run claude-remote-pick --restore "$f"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
+}
+
+# A session file for <pid> naming <sid>; ps-stub answers lstart "$3" for that pid.
+live_session() {
+  printf '%s\n' "$3" >"$FAKE_PS_DIR/$1.lstart"
+  printf '{"sessionId":"%s","kind":"interactive","status":"idle","procStart":"%s"}' \
+    "$2" "$4" >"$CR_SESSIONS_DIR/$1.json"
+}
+
+@test "a session already held by a live process is not launched again" {
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  live_session 777 S1 "Thu Jan  1 00:00:00 2026" "Thu Jan  1 00:00:00 2026"
+  {
+    row proj-11 11 /tmp ok "" S1 idle "" ""
+    row proj-12 12 /tmp ok "" S2 idle "" ""
+  } >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Wiederhergestellt: 2 von 2"* ]]
+  [[ "$output" == *"Bereits aktiv (nicht doppelt gestartet):"* ]]
+  [[ "$output" == *"  - proj-11"* ]]
+  [ "$($CR_TMUX list-sessions -F '#{session_name}' | grep -c '^proj-[0-9]*$')" -eq 1 ]
+}
+
+@test "a stale session file (start time differs) does not block the launch" {
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  live_session 777 S1 "Fri Jan  2 00:00:00 2026" "Thu Jan  1 00:00:00 2026"
+  row proj-11 11 /tmp ok "" S1 idle "" "" >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Bereits aktiv"* ]]
+  $CR_TMUX list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
+}
+
+@test "without an anchor server nothing is launched and no server is born" {
+  {
+    row proj-11 11 /tmp ok "" S1 idle "" ""
+    row proj-12 12 /tmp ok "" S2 idle "" ""
+  } >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"  - proj-11: kein Anchor-Server"* ]]
+  [[ "$output" == *"  - proj-12: kein Anchor-Server"* ]]
+  [[ "$output" == *"Wiederhergestellt: 0 von 2"* ]]
+  run $CR_TMUX list-sessions
+  [ "$status" -ne 0 ]
 }
