@@ -390,28 +390,46 @@ cr_server_pid() {
 }
 
 # cr_stop_anchor_and_server: end the anchor supervisor(s) first, so nothing re-births
-# the server, wait up to 5 s for them to be gone, then kill the server. Order is
-# load-bearing. Returns 1 when a server still answers afterwards.
+# the server; only once they are provably gone kill the server. TERM, wait up to 5 s,
+# KILL the survivors, wait up to 2 s; if any is still alive return 1 WITHOUT touching
+# the server (fail safe: nothing is destroyed). Returns 1 also when a server still
+# answers after kill-server. Order is load-bearing.
 cr_stop_anchor_and_server() {
-  local pids pid i alive
+  local pids pid
   pids="$($CR_PGREP -f 'claude-remote-pick --supervise-anchor' 2>/dev/null)"
   for pid in $pids; do
     kill -TERM "$pid" 2>/dev/null
   done
-  i=0
-  while [ "$i" -lt 5 ]; do
-    alive=0
+  # shellcheck disable=SC2086
+  _cr_wait_gone 5 $pids && pids=""
+  if [ -n "$pids" ]; then
     for pid in $pids; do
-      kill -0 "$pid" 2>/dev/null && alive=1
+      kill -KILL "$pid" 2>/dev/null
     done
-    [ "$alive" -eq 0 ] && break
-    sleep 1
-    i=$((i + 1))
-  done
+    # shellcheck disable=SC2086
+    _cr_wait_gone 2 $pids || return 1
+  fi
   # shellcheck disable=SC2086
   $CR_TMUX kill-server 2>/dev/null
   cr_server_pid >/dev/null && return 1
   return 0
+}
+
+# _cr_wait_gone <seconds> [<pid>...]: poll once per second until none of the pids is
+# alive; return 1 when some still is after <seconds>.
+_cr_wait_gone() {
+  local max=$1 i=0 pid alive
+  shift
+  while :; do
+    alive=0
+    for pid in "$@"; do
+      kill -0 "$pid" 2>/dev/null && alive=1
+    done
+    [ "$alive" -eq 0 ] && return 0
+    [ "$i" -ge "$max" ] && return 1
+    sleep 1
+    i=$((i + 1))
+  done
 }
 
 # cr_start_anchor <old_server_pid>: kickstart the anchor LaunchAgent and poll once per
@@ -419,7 +437,9 @@ cr_stop_anchor_and_server() {
 # differs from <old_server_pid>. Returns 0 on success, 1 on timeout.
 cr_start_anchor() {
   local old=$1 i=0 new
-  "$CR_LAUNCHCTL" kickstart "gui/$(id -u)/$CR_ANCHOR_LABEL" >/dev/null 2>&1
+  # -k: the agent job may be mid-run (the per-interval `open` in flight); without it a
+  # kickstart can leave that run alone and no fresh anchor starts until the next tick.
+  "$CR_LAUNCHCTL" kickstart -k "gui/$(id -u)/$CR_ANCHOR_LABEL" >/dev/null 2>&1
   while :; do
     # shellcheck disable=SC2086
     if $CR_TMUX has-session -t "$CR_ANCHOR" 2>/dev/null; then
