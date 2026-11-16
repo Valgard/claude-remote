@@ -142,12 +142,14 @@ while true; do
       # anything is stopped and removed again when the user declines.
       if cr_restart_inside_server; then
         echo "Neustart geht nicht aus einer Session dieses Servers – bitte aus einem normalen Terminal oder vom iPad starten."
+        read -r -p 'Weiter mit Enter ' _ || true
         continue
       fi
       snap="${CR_RESTART_DIR%/}/claude-remote-restart-$(date +%Y%m%d-%H%M%S).tsv"
       if ! cr_restart_snapshot >"$snap"; then
         rm -f "$snap"
         echo "Kein tmux-Server läuft."
+        read -r -p 'Weiter mit Enter ' _ || true
         continue
       fi
       cr_restart_summary "$snap"
