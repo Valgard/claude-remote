@@ -90,6 +90,23 @@ nothing_stopped() {
   [ -z "$(snapshots)" ]
 }
 
+@test "confirm: a title that changed while the user read does not ask again" {
+  # Only (name, verdict) decide whether the user saw what will be killed; a title can
+  # change at any time (an ai-title regenerated, a /rename) without changing that.
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  pid=$(cr_make_session proj-1)
+  restorable "$pid" S1
+  $CR_TMUX select-pane -t proj-1 -T $'\xe2\x9c\xb3 alter_titel'
+  snap="$(cr_restart_snapshot_file)"
+  [ "$(cut -f1,4,10 "$snap")" = $'proj-1\tok\talter_titel' ]
+  $CR_TMUX select-pane -t proj-1 -T $'\xe2\x9c\xb3 neuer_titel'
+  # Called directly, not via run: a second question would read EOF, decline, and
+  # return 1, which fails the test here.
+  cr_restart_confirm "$snap" <<<'j' >"$BATS_TEST_TMPDIR/out"
+  [ "$(cut -f10 "$CR_RESTART_SNAP")" = neuer_titel ]
+  [ "$(grep -c 'geändert' "$BATS_TEST_TMPDIR/out")" -eq 0 ]
+}
+
 @test "confirm: a changed set confirmed again runs with the new snapshot" {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   cr_make_session late-1 >/dev/null

@@ -27,6 +27,24 @@ teardown() { cr_teardown; }
   [[ "$output" != *"Mitten in einer Antwort"* ]]
 }
 
+@test "summary names a titled session by title and tmux name, an untitled one by its name" {
+  # Several sessions started in ~/Projects share the name Projects-<pid>; only the
+  # title (column 10) tells them apart.
+  printf '%s\n' \
+    $'Projects-1\t1\t/x\tok\t\tS1\tbusy\t\t\tgokeepasslib_issue' \
+    $'Projects-2\t2\t/x\tok\t\tS2\twaiting\t/x/.wt\t--brief\tlink_tokens' \
+    $'Projects-3\t3\t/x\tok\t\tS3\tbusy\t\t\t' \
+    $'Projects-4\t4\t/x\tskip\tkeine Session-ID\t\t\t\t\tskipped_one' >"$f"
+  run cr_restart_summary "$f"
+  [ "$status" -eq 0 ]
+  grep -qx 'Wiederherstellen: 3 von 4 Sessions' <<<"$output"
+  grep -qx '  - gokeepasslib_issue (Projects-1)' <<<"$output"
+  grep -qx '  - link_tokens (Projects-2)' <<<"$output"
+  grep -qx '  - link_tokens (Projects-2) → /x/.wt' <<<"$output"
+  grep -qx '  - Projects-3' <<<"$output"
+  grep -qx '  - skipped_one (Projects-4): keine Session-ID' <<<"$output"
+}
+
 @test "summary of a snapshot without rows says only anchor and server restart" {
   : >"$f"
   run cr_restart_summary "$f"

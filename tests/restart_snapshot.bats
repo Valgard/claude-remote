@@ -116,6 +116,67 @@ mk() {
   [ "$(cut -f8 <<<"$output")" = "" ]
 }
 
+# Claude Code's terminal-title prefix (U+2733 + space), spelled as bytes as in
+# pane_title.bats.
+PFX=$'\xe2\x9c\xb3 '
+
+# transcript <session_id> <custom-title>: a transcript under the -tmp project dir.
+transcript() {
+  mkdir -p "$CR_PROJECTS_DIR/-tmp"
+  printf '{"type":"custom-title","customTitle":"%s","sessionId":"%s"}\n' "$2" "$1" \
+    >"$CR_PROJECTS_DIR/-tmp/$1.jsonl"
+}
+
+@test "the title column holds the pane's own title over the transcript's" {
+  mk proj-1 /tmp "" S1
+  mk bare-2 /tmp "" S2
+  $CR_TMUX select-pane -t proj-1 -T "${PFX}pane_name"
+  transcript S1 transcript_name
+  run cr_restart_snapshot
+  [ "$status" -eq 0 ]
+  [ "$(awk -F'\t' '$1 == "proj-1" { print NF "|" $10 }' <<<"$output")" = "10|pane_name" ]
+  # Neither a pane title nor a transcript: the column is there, and empty.
+  [ "$(awk -F'\t' '$1 == "bare-2" { print NF "|" $10 }' <<<"$output")" = "10|" ]
+}
+
+@test "without a pane title the title comes from the transcript of the row's own id" {
+  # The placeholder is declined; a newer transcript of another session in the same
+  # directory (what abtop's guess would pick) must not lend its name.
+  mk proj-1 /tmp "" S1
+  $CR_TMUX select-pane -t proj-1 -T "${PFX}Claude Code"
+  transcript S1 own_name
+  transcript S9 foreign_name
+  touch -t 202001010000 "$CR_PROJECTS_DIR/-tmp/S1.jsonl"
+  run cr_restart_snapshot
+  [ "$(cut -f4,10 <<<"$output")" = $'ok\town_name' ]
+}
+
+@test "a session file of another process lends the row no title" {
+  # Its id names the session of the process that wrote the file, not this pane's.
+  pid=$(mk proj-1 /tmp "" S1)
+  printf 'Thu Jan  1 00:00:00 2026\n' >"$FAKE_PS_DIR/$pid.lstart"
+  transcript S1 foreign_name
+  run cr_restart_snapshot
+  [ "$(awk -F'\t' '{ print NF "|" $4 "|" $10 }' <<<"$output")" = "10|skip|" ]
+}
+
+@test "a skip row with its own session id still gets the transcript title" {
+  mk deny-1 /tmp "--brief --tools Read" S1
+  transcript S1 restricted_name
+  run cr_restart_snapshot
+  [ "$(cut -f4,10 <<<"$output")" = $'skip\trestricted_name' ]
+}
+
+@test "a tab in the launch args cannot shift the title column" {
+  # The title follows the args now, so the args must stay one column. Tab and
+  # newline become spaces, which the restore splits on anyway.
+  pid=$(mk proj-1 /tmp "" S1)
+  printf 'claude --brief\tx\n' >"$FAKE_PS_DIR/$pid.args"
+  $CR_TMUX select-pane -t proj-1 -T "${PFX}pane_name"
+  run cr_restart_snapshot
+  [ "$(awk -F'\t' '{ print NF "|" $9 "|" $10 }' <<<"$output")" = "10|--brief x|pane_name" ]
+}
+
 @test "no server: returns 1" {
   run cr_restart_snapshot
   [ "$status" -eq 1 ]

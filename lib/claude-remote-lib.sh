@@ -394,6 +394,16 @@ CR_KEEP_VALUE_FLAGS="--model --fallback-model --effort --permission-mode --agent
 # --allowedTools is deliberately absent: it only pre-approves tools, so dropping it
 # costs permission prompts, never a restriction; it is dropped and listed like any other.
 CR_RESTRICT_FLAGS="--disallowedTools --disallowed-tools --tools --settings --strict-mcp-config --permission-prompt-tool"
+# The awk function who(): how the summary, its re-ask and the restore report name a
+# snapshot row (the current record): `<title> (<tmux name>)`, or the bare tmux name
+# when column 10 is empty or absent (a 9-column snapshot from before the title
+# column). The tmux name alone, `<start-dir basename>-<pid>`, does not tell apart the
+# sessions started in one directory. One definition, spliced in front of each program.
+# SC2016: $1/$10 are awk fields, not shell expansions.
+# shellcheck disable=SC2016
+CR_RESTART_WHO_AWK='
+function who() { return ($10 == "") ? $1 : ($10 " (" $1 ")") }
+'
 
 # cr_server_pid: print the running tmux server's pid; return 1 when none runs.
 cr_server_pid() {
@@ -648,20 +658,33 @@ _cr_args_drop_restriction() {
 }
 
 # cr_restart_snapshot: one TSV row per pane of every session except $CR_ANCHOR:
-#   name  pid  start  verdict  reason  session_id  status  last_cwd  args
+#   name  pid  start  verdict  reason  session_id  status  last_cwd  args  title
 # verdict is `ok` or `skip`; the first failing check sets the (German) reason:
 # not a claude process, no/garbled session file, session file of another process
 # (pid reuse), not interactive, no session id, a restricting launch flag the relaunch
 # would drop (CR_RESTRICT_FLAGS). last_cwd is where the transcript last worked, left
-# empty when unknown or equal to start. Returns 1 when no server runs.
+# empty when unknown or equal to start. title is for display only and comes from
+# exact sources alone: the pane's own title (cr_pane_title_clean), else the transcript
+# title of the row's session id, and only when that id is the pane process' own (not
+# when the session file belongs to another process); never abtop's guessed id. Tab and
+# newline in args become spaces (the restore splits on them anyway) and every control
+# character in title does, so neither can shift a column. Returns 1 when no server runs.
 cr_restart_snapshot() {
-  local panes name pid start verdict reason sid kind sstat pstart args cwd rec rc
+  local panes line name pid start ptitle verdict reason sid own kind sstat pstart args cwd rec rc title
+  # pane_title goes last: split by hand below, a tab inside it stays in the title.
   # shellcheck disable=SC2086
-  panes="$($CR_TMUX list-panes -a -F "#{session_name}"$'\t'"#{pane_pid}"$'\t'"#{pane_start_path}" 2>/dev/null)" || return 1
-  while IFS=$'\t' read -r name pid start; do
+  panes="$($CR_TMUX list-panes -a -F "#{session_name}"$'\t'"#{pane_pid}"$'\t'"#{pane_start_path}"$'\t'"#{pane_title}" 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    # Not `read` with a tab IFS: it collapses an empty start path and shifts the title.
+    name=${line%%$'\t'*}
+    line=${line#*$'\t'}
+    pid=${line%%$'\t'*}
+    line=${line#*$'\t'}
+    start=${line%%$'\t'*}
+    ptitle=${line#*$'\t'}
     [ -n "$name" ] || continue
     [ "$name" = "$CR_ANCHOR" ] && continue
-    verdict=skip reason="" sid="" sstat="" cwd="" args=""
+    verdict=skip reason="" sid="" own="" sstat="" cwd="" args=""
     if ! args="$(cr_proc_claude_args "$pid")"; then
       args=""
       reason="kein Claude-Prozess"
@@ -681,7 +704,10 @@ cr_restart_snapshot() {
         rec=${rec#*$'\t'}
         sstat=${rec%%$'\t'*}
         pstart=${rec#*$'\t'}
+        own=$sid
         if ! cr_proc_start_matches "$pid" "$pstart"; then
+          # The id is the session of the process that wrote the file, not this pane's.
+          own=""
           reason="Session-Datei gehört zu einem anderen Prozess"
         elif [ "$kind" != "interactive" ]; then
           reason="keine interaktive Session"
@@ -696,8 +722,15 @@ cr_restart_snapshot() {
         fi
       fi
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$name" "$pid" "$start" "$verdict" "$reason" "$sid" "$sstat" "$cwd" "$args"
+    cr_pane_title_clean "$ptitle"
+    title=$CR_PANE_TITLE
+    if [ -z "$title" ] && [ -n "$own" ]; then
+      title="$(cr_session_title "$(cr_session_file "$own")")"
+    fi
+    args=${args//[$'\t\n']/ }
+    title=${title//[[:cntrl:]]/ }
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$pid" "$start" "$verdict" "$reason" "$sid" "$sstat" "$cwd" "$args" "$title"
   done <<<"$panes"
   return 0
 }
@@ -706,16 +739,17 @@ cr_restart_snapshot() {
 # Mid-turn = ok rows that are busy/waiting (status of skip rows is ignored). awk with
 # an explicit tab FS keeps empty columns in place; `read` with a tab IFS would not.
 # A snapshot without rows says plainly that only anchor and server restart, so a user
-# who knows of sessions sees before answering that the snapshot missed them.
+# who knows of sessions sees before answering that the snapshot missed them. Each
+# listed session is named by who() (CR_RESTART_WHO_AWK).
 cr_restart_summary() {
-  awk -F'\t' '
+  awk -F'\t' "$CR_RESTART_WHO_AWK"'
     { total++ }
     $4 == "ok" {
       ok++
-      if ($7 == "busy" || $7 == "waiting") mid = mid "  - " $1 "\n"
-      if ($8 != "") drift = drift "  - " $1 " → " $8 "\n"
+      if ($7 == "busy" || $7 == "waiting") mid = mid "  - " who() "\n"
+      if ($8 != "") drift = drift "  - " who() " → " $8 "\n"
     }
-    $4 != "ok" { lost = lost "  - " $1 ": " $5 "\n" }
+    $4 != "ok" { lost = lost "  - " who() ": " $5 "\n" }
     END {
       if (!total) {
         print "Keine Sessions – nur Anchor und tmux-Server werden neu gestartet."
@@ -754,7 +788,8 @@ cr_restart_snapshot_file() {
 # cr_restart_same_sessions <snapshot-a> <snapshot-b>: 0 iff both list the same
 # (session name, verdict) pairs (columns 1 and 4, order ignored). The verdict counts
 # too: a session that turned unrestorable since the summary would otherwise be killed
-# without the user having seen that it will not come back.
+# without the user having seen that it will not come back. The title (column 10) does
+# not: it may change at any time (a regenerated ai-title, a /rename) and is display only.
 cr_restart_same_sessions() {
   [ "$(awk -F'\t' '{ print $1 "\t" $4 }' "$1" | LC_ALL=C sort)" = \
     "$(awk -F'\t' '{ print $1 "\t" $4 }' "$2" | LC_ALL=C sort)" ]
@@ -832,7 +867,10 @@ _cr_session_live() {
 # `claude <kept flags> --resume <session_id>` in the row's start dir under its old label
 # (cr_launch appends the new pid). The rows are split by parameter expansion, never
 # `read` with a tab IFS: tab is IFS whitespace, so empty columns (reason, last_cwd,
-# args) would collapse and shift the rest. A row whose start dir is gone fails alone.
+# args, title) would collapse and shift the rest. args is column 9 alone, so the title
+# after it never becomes a launch argument; a 9-column snapshot (from before the title
+# column) restores the same way, untitled. Every report line names its session by
+# who() (CR_RESTART_WHO_AWK). A row whose start dir is gone fails alone.
 # A row whose session id a live process already holds is not launched again: counted
 # as restored and listed as already active — unless that holder is the row's OWN old
 # process (its snapshot pid). That one is still exiting after kill-server, or outlives
@@ -853,11 +891,12 @@ _cr_session_live() {
 # sections omitted); a snapshot without rows (a server that held only the anchor) just
 # says there is nothing to restore. Returns 0 iff every `ok` row was restored.
 cr_restore_sessions() {
-  local file=$1 rows line rest name pid start sid cwd args label new tok mark holder
+  local file=$1 rows line rest who name pid start sid cwd args label new tok mark holder
   local total=0 restored=0 failed="" dropped="" launched="" entry new_name cap
   local kept drop active="" drift="" noanchor=0 lost
-  rows="$(awk -F'\t' '$4 == "ok"' "$file")" || return 1
-  lost="$(awk -F'\t' '$4 != "ok" { print "  - " $1 ": " $5 }' "$file")" || return 1
+  # Each ok row with its who() name in front, so the loop names it without a fork.
+  rows="$(awk -F'\t' "$CR_RESTART_WHO_AWK"'$4 == "ok" { print who() "\t" $0 }' "$file")" || return 1
+  lost="$(awk -F'\t' "$CR_RESTART_WHO_AWK"'$4 != "ok" { print "  - " who() ": " $5 }' "$file")" || return 1
   if [ -z "$rows" ] && [ -z "$lost" ]; then
     echo "Keine Sessions wiederherzustellen."
     return 0
@@ -866,6 +905,8 @@ cr_restore_sessions() {
     while IFS= read -r line; do
       total=$((total + 1))
       rest=$line
+      who=${rest%%$'\t'*}
+      rest=${rest#*$'\t'}
       name=${rest%%$'\t'*}
       rest=${rest#*$'\t'}
       pid=${rest%%$'\t'*}
@@ -879,28 +920,28 @@ cr_restore_sessions() {
       rest=${rest#*$'\t'}
       cwd=${rest%%$'\t'*}
       rest=${rest#*$'\t'}
-      args=$rest
+      args=${rest%%$'\t'*}
       if [ "$noanchor" -eq 1 ]; then
-        failed="${failed}  - ${name}: kein Anchor-Server"$'\n'
+        failed="${failed}  - ${who}: kein Anchor-Server"$'\n'
         continue
       fi
       if holder="$(_cr_session_live "$sid")"; then
         if [ "$holder" = "$pid" ]; then
-          failed="${failed}  - ${name}: alter Prozess läuft noch (pid ${pid})"$'\n'
+          failed="${failed}  - ${who}: alter Prozess läuft noch (pid ${pid})"$'\n'
         else
           restored=$((restored + 1))
-          active="${active}  - ${name}"$'\n'
+          active="${active}  - ${who}"$'\n'
         fi
         continue
       fi
       if [ ! -d "$start" ]; then
-        failed="${failed}  - ${name}: Startordner fehlt"$'\n'
+        failed="${failed}  - ${who}: Startordner fehlt"$'\n'
         continue
       fi
       # shellcheck disable=SC2086
       if ! $CR_TMUX has-session -t "=$CR_ANCHOR" 2>/dev/null; then
         noanchor=1
-        failed="${failed}  - ${name}: kein Anchor-Server"$'\n'
+        failed="${failed}  - ${who}: kein Anchor-Server"$'\n'
         continue
       fi
       # The args column is the space-joined `ps` args: split on spaces, no globbing.
@@ -910,7 +951,7 @@ cr_restore_sessions() {
       set +f
       # The snapshot already marks such a row skip; this holds for any file handed in.
       if cr_drops_restriction "$@"; then
-        failed="${failed}  - ${name}: einschränkende Startoptionen (nicht sicher übertragbar)"$'\n'
+        failed="${failed}  - ${who}: einschränkende Startoptionen (nicht sicher übertragbar)"$'\n'
         continue
       fi
       kept=()
@@ -924,31 +965,31 @@ cr_restore_sessions() {
           drop="${drop:+$drop }$tok"
         fi
       done < <(cr_rewrite_claude_args "$sid" "$@")
-      [ -z "$drop" ] || dropped="${dropped}  - ${name}: ${drop}"$'\n'
+      [ -z "$drop" ] || dropped="${dropped}  - ${who}: ${drop}"$'\n'
       label="$(cr_session_label "$name")"
       if new="$(cd "$start" && cr_launch "$label" 0 0 -- "${kept[@]}" </dev/null)" && [ -n "$new" ]; then
-        launched="${launched}${new}"$'\t'"${name}"$'\t'"${cwd}"$'\n'
+        launched="${launched}${new}"$'\t'"${who}"$'\t'"${cwd}"$'\n'
       else
-        failed="${failed}  - ${name}: Start fehlgeschlagen"$'\n'
+        failed="${failed}  - ${who}: Start fehlgeschlagen"$'\n'
       fi
     done <<<"$rows"
   fi
   if [ -n "$launched" ]; then
     sleep "$CR_RESTORE_SETTLE"
-    # new_name<TAB>old name<TAB>last_cwd; last_cwd may be empty, so split by hand.
+    # new_name<TAB>who<TAB>last_cwd; last_cwd may be empty, so split by hand.
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
       new_name=${entry%%$'\t'*}
       entry=${entry#*$'\t'}
-      name=${entry%%$'\t'*}
+      who=${entry%%$'\t'*}
       cwd=${entry#*$'\t'}
       # shellcheck disable=SC2086
       if $CR_TMUX has-session -t "=$new_name" 2>/dev/null; then
         restored=$((restored + 1))
-        [ -z "$cwd" ] || drift="${drift}  - ${name} → ${cwd}"$'\n'
+        [ -z "$cwd" ] || drift="${drift}  - ${who} → ${cwd}"$'\n'
       else
         cap="$(cr_drain_exit_output "$new_name" 2>/dev/null | awk 'NF { last = $0 } END { print last }')"
-        failed="${failed}  - ${name}: beendete sich sofort${cap:+: $cap}"$'\n'
+        failed="${failed}  - ${who}: beendete sich sofort${cap:+: $cap}"$'\n'
       fi
     done <<<"$launched"
   fi

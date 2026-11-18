@@ -12,8 +12,11 @@ teardown() {
   cr_teardown
 }
 
-# One snapshot row: name pid start verdict reason session_id status last_cwd args
-row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
+# One snapshot row: name pid start verdict reason session_id status last_cwd args [title]
+# Always 10 columns, as the snapshot writes them; an omitted title is empty.
+row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
+# The same row in the 9-column format snapshots had before the title column.
+row9() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
 
 # Old pane pid for rows that execute waits on: above every PID_MAX, so it can never
 # name a live process (execute probes these pids with kill -0).
@@ -41,6 +44,52 @@ GONE=99999999
   [ "$status" -eq 0 ]
   [ "$(grep -c 'Weggelassene Argumente' <<<"$output")" -eq 0 ]
   [ "$(cat "$FAKE_CLAUDE_ARGV_FILE")" = "--brief --resume S1" ]
+}
+
+@test "the report names every session by its title and tmux name" {
+  export FAKE_CLAUDE_ARGV_FILE="$BATS_TEST_TMPDIR/argv"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  live_session 777 S3 "Thu Jan  1 00:00:00 2026" "Thu Jan  1 00:00:00 2026"
+  {
+    row proj-11 11 /tmp ok "" S1 idle /tmp/.worktrees/x "--brief --name n" eins
+    row gone-12 12 /nonexistent ok "" S2 idle "" "" zwei
+    row act-13 13 /tmp ok "" S3 idle "" "" drei
+    row skip-14 14 /tmp skip "keine Session-Datei" "" "" "" "" vier
+    row gone-15 15 /nonexistent ok "" S5 idle "" ""
+  } >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 1 ]
+  grep -qx 'Wiederhergestellt: 2 von 4' <<<"$output"
+  grep -qx '  - zwei (gone-12): Startordner fehlt' <<<"$output"
+  grep -qx '  - gone-15: Startordner fehlt' <<<"$output"
+  grep -qx '  - vier (skip-14): keine Session-Datei' <<<"$output"
+  grep -qx '  - drei (act-13)' <<<"$output"
+  grep -qx '  - eins (proj-11) → /tmp/.worktrees/x' <<<"$output"
+  grep -qx '  - eins (proj-11): --name n' <<<"$output"
+  # The title is display only: never a launch argument, never part of the label.
+  [ "$(cat "$FAKE_CLAUDE_ARGV_FILE")" = "--brief --resume S1" ]
+  $CR_TMUX list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
+}
+
+@test "a 9-column snapshot from before the title column still restores" {
+  # The format restart snapshots had until the title column; a retry with
+  # `--restore <file>` may hand in such a file. No column 10 means no title.
+  export FAKE_CLAUDE_ARGV_FILE="$BATS_TEST_TMPDIR/argv"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  {
+    row9 proj-11 11 /tmp ok "" S1 idle /tmp/.worktrees/x "--brief --name n"
+    row9 skip-12 12 /tmp skip "keine Session-Datei" "" "" "" ""
+  } >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 0 ]
+  grep -qx 'Wiederhergestellt: 1 von 1' <<<"$output"
+  grep -qx '  - proj-11 → /tmp/.worktrees/x' <<<"$output"
+  grep -qx '  - proj-11: --name n' <<<"$output"
+  grep -qx '  - skip-12: keine Session-Datei' <<<"$output"
+  [ "$(cat "$FAKE_CLAUDE_ARGV_FILE")" = "--brief --resume S1" ]
+  run cr_restart_summary "$f"
+  grep -qx '  - proj-11 → /tmp/.worktrees/x' <<<"$output"
+  grep -qx '  - skip-12: keine Session-Datei' <<<"$output"
 }
 
 @test "two sessions with the same label both come back" {
