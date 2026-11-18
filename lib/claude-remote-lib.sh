@@ -513,14 +513,30 @@ cr_session_label() {
 
 # cr_rewrite_claude_args <session_id> [<arg>...]: classify each launch token as kept
 # (+<TAB>token) or dropped (-<TAB>token), in input order, then append the exact
-# `--resume <session_id>`. Only allowlisted flags survive; positional prompts, resume/
-# continue/name/worktree and variadic flags are dropped.
+# `--resume <session_id>`. Only allowlisted flags survive; positional prompts, --name,
+# --worktree and variadic flags are dropped. The tokens that pick which conversation
+# opens (--resume/-r and --session-id with their optional value, --continue/-c,
+# --fork-session) print no line at all: the appended --resume REPLACES that choice,
+# so reporting them as dropped would only bury the real drops. Their value is the next
+# token iff it does not start with `-` (claude's `-r, --resume [value]`), so a flag
+# after them, restricting or not, is still classified on its own. --fork-session needs
+# no successor: the session file already holds the forked id.
 cr_rewrite_claude_args() {
   local sid=$1 tok flag
   shift
   while [ $# -gt 0 ]; do
     tok=$1
     shift
+    case $tok in
+      --resume | -r | --session-id)
+        case ${1:--} in
+          -*) ;;
+          *) shift ;;
+        esac
+        continue
+        ;;
+      --resume=* | --session-id=* | --continue | -c | --fork-session) continue ;;
+    esac
     flag=${tok%%=*}
     case " $CR_KEEP_FLAGS " in
       *" $tok "*)

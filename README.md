@@ -170,7 +170,7 @@ After the restart, the report lists:
 - sessions that could not be restored, with the reason (as in the confirmation), so every session of the old server is named;
 - sessions that were already running (they are not started twice);
 - restored sessions that last worked in another directory, with that directory (they now run in their start directory);
-- launch arguments that were dropped: positional prompts, `--name`, `--mcp-config` and anything else off the allowlist.
+- launch arguments that were dropped: positional prompts, `--name`, `--mcp-config` and anything else off the allowlist. A launch-time `--resume`, `--session-id`, `--continue` or `--fork-session` is not listed, because the restore replaces it with the exact session id rather than dropping it.
 
 The report is also saved to `<snapshot>.report`, so it survives a dropped SSH connection. If the run ends before the restore (the server cannot be stopped, or no new server comes up), that file says why, including a failed `launchctl kickstart` with its exit code. If the restore did not finish, the report names the snapshot file again; retry with `claude-remote-pick --restore <file>`. Sessions that are already running are skipped, so a retry never duplicates anything. The snapshot and the report are readable only by you (mode 0600). The restart refuses to run from inside a session of the server it would restart — use a normal terminal or the iPad instead. Started from inside another tmux server, it still restarts the claude-remote server, never that one.
 

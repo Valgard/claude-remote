@@ -13,7 +13,25 @@ dropped() { cr_rewrite_claude_args "$@" | awk -F'\t' '$1=="-"{print $2}' | paste
 
 @test "launch-time --resume title is replaced by the exact id" {
   [ "$(kept SID --allow-dangerously-skip-permissions --brief --resume claude_guards)" = "--allow-dangerously-skip-permissions --brief --resume SID" ]
-  [ "$(dropped SID --allow-dangerously-skip-permissions --brief --resume claude_guards)" = "--resume claude_guards" ]
+  # Replaced, not dropped: listing it would bury the real drops in the report.
+  [ "$(dropped SID --allow-dangerously-skip-permissions --brief --resume claude_guards)" = "" ]
+}
+
+@test "every token that picks the conversation is replaced without a line of its own" {
+  # -r/--resume [value] and --session-id: the value is the next token iff that is not
+  # a flag. --continue/-c and --fork-session take none.
+  [ "$(cr_rewrite_claude_args SID --resume x -r --session-id u --session-id=v --resume=w -c --continue --fork-session)" = $'+\t--resume\n+\tSID' ]
+  [ "$(dropped SID --resume x fix it)" = "fix it" ]
+  [ "$(kept SID --resume x fix it)" = "--resume SID" ]
+  [ "$(kept SID --resume --brief)" = "--brief --resume SID" ]
+  [ "$(dropped SID --resume --brief)" = "" ]
+  [ "$(dropped SID -r t --brief)" = "" ]
+  [ "$(cr_rewrite_claude_args SID --brief --resume)" = $'+\t--brief\n+\t--resume\n+\tSID' ]
+  [ "$(cr_rewrite_claude_args SID --brief -r)" = $'+\t--brief\n+\t--resume\n+\tSID' ]
+  [ "$(dropped SID --session-id u --model)" = "--model" ]
+  # The optional value never swallows a flag, so a restricting one is still seen.
+  cr_drops_restriction --resume --tools Read
+  cr_drops_restriction --session-id --settings=x.json
 }
 
 @test "--name is dropped so a later /rename survives" {

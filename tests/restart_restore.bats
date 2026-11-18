@@ -27,9 +27,20 @@ GONE=99999999
   [ "$status" -eq 0 ]
   [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
   [[ "$output" == *"Weggelassene Argumente:"* ]]
-  [[ "$output" == *"  - proj-11: --name old --resume t"* ]]
+  # The launch-time --resume is replaced by the exact id, not dropped: not listed.
+  grep -qx '  - proj-11: --name old' <<<"$output"
   [ "$(cat "$FAKE_CLAUDE_ARGV_FILE")" = "--brief --resume S1" ]
   $CR_TMUX list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
+}
+
+@test "a row whose only off-list args pick the conversation lists no dropped arguments" {
+  export FAKE_CLAUDE_ARGV_FILE="$BATS_TEST_TMPDIR/argv"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  row proj-11 11 /tmp ok "" S1 idle "" "--brief --resume claude_guards --fork-session" >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'Weggelassene Argumente' <<<"$output")" -eq 0 ]
+  [ "$(cat "$FAKE_CLAUDE_ARGV_FILE")" = "--brief --resume S1" ]
 }
 
 @test "two sessions with the same label both come back" {
