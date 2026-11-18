@@ -27,6 +27,13 @@ teardown() { cr_teardown; }
   [[ "$output" != *"Mitten in einer Antwort"* ]]
 }
 
+@test "summary of a snapshot without rows says only anchor and server restart" {
+  : >"$f"
+  run cr_restart_summary "$f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Keine Sessions – nur Anchor und tmux-Server werden neu gestartet." ]
+}
+
 @test "summary ignores status of skip rows" {
   printf '%s\n' $'z-9\t9\t/x\tskip\tkeine Session-ID\tS9\tbusy\t\t' >"$f"
   run cr_restart_summary "$f"

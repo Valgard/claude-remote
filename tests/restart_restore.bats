@@ -136,22 +136,57 @@ GONE=99999999
   $CR_TMUX list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
 }
 
-@test "execute refuses a missing, empty or unreadable snapshot and stops nothing" {
+@test "execute refuses a missing or unreadable snapshot and stops nothing" {
   # Stopping without a usable snapshot would end every session with no way back.
   export CR_PGREP="$(stub pgrep "touch '$BATS_TEST_TMPDIR/pgrep.called'")"
   export CR_LAUNCHCTL="$(stub launchctl "touch '$BATS_TEST_TMPDIR/lc.called'")"
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   cr_make_session proj-1 >/dev/null
   old=$(cr_server_pid)
-  local missing="$BATS_TEST_TMPDIR/does-not-exist" empty="$BATS_TEST_TMPDIR/empty" locked="$BATS_TEST_TMPDIR/locked"
-  : >"$empty"
+  local missing="$BATS_TEST_TMPDIR/does-not-exist" locked="$BATS_TEST_TMPDIR/locked"
   row proj-1 "$GONE" /tmp ok "" S1 idle "" "" >"$locked"
   chmod 000 "$locked"
-  for s in "$missing" "$empty" "$locked"; do
+  for s in "$missing" "$locked"; do
     run cr_restart_execute "$s"
     [ "$status" -ne 0 ]
-    [ "$output" = "Snapshot-Datei $s fehlt, ist leer (keine Sessions) oder nicht lesbar – es wurde nichts beendet." ]
+    [ "$output" = "Snapshot-Datei $s fehlt oder ist nicht lesbar – es wurde nichts beendet." ]
   done
+  [ ! -e "$BATS_TEST_TMPDIR/pgrep.called" ]
+  [ ! -e "$BATS_TEST_TMPDIR/lc.called" ]
+  [ "$(cr_server_pid)" = "$old" ]
+  $CR_TMUX has-session -t "=proj-1"
+}
+
+@test "an empty snapshot of a server holding only the anchor restarts anchor and server" {
+  # The stale anchor instance is cured only by replacing it; with no session there is
+  # nothing to lose, so an empty snapshot must not block that.
+  export CR_PGREP="$(stub pgrep "touch '$BATS_TEST_TMPDIR/pgrep.called'")"
+  export CR_LAUNCHCTL="$(agent_stub "touch '$BATS_TEST_TMPDIR/kick.called'; \$CR_TMUX new-session -d -s _cr_anchor")"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  old=$(cr_server_pid)
+  : >"$f"
+  run cr_restart_execute "$f"
+  [ "$status" -eq 0 ]
+  [ -e "$BATS_TEST_TMPDIR/pgrep.called" ]
+  [ -e "$BATS_TEST_TMPDIR/kick.called" ]
+  [ "$(cr_server_pid)" != "$old" ]
+  $CR_TMUX has-session -t "=$CR_ANCHOR"
+  [ "${lines[${#lines[@]} - 1]}" = "Keine Sessions wiederherzustellen." ]
+  [[ "$output" != *"Stelle "* ]]
+  [ "$(cat "$f.report")" = "Keine Sessions wiederherzustellen." ]
+}
+
+@test "an empty snapshot of a server that holds sessions is refused and stops nothing" {
+  # The snapshot write failed: executing it would end proj-1 without a way back.
+  export CR_PGREP="$(stub pgrep "touch '$BATS_TEST_TMPDIR/pgrep.called'")"
+  export CR_LAUNCHCTL="$(stub launchctl "touch '$BATS_TEST_TMPDIR/lc.called'")"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  cr_make_session proj-1 >/dev/null
+  old=$(cr_server_pid)
+  : >"$f"
+  run cr_restart_execute "$f"
+  [ "$status" -ne 0 ]
+  [ "$output" = "Snapshot-Datei $f ist leer, der Server hat aber Sessions – es wurde nichts beendet." ]
   [ ! -e "$BATS_TEST_TMPDIR/pgrep.called" ]
   [ ! -e "$BATS_TEST_TMPDIR/lc.called" ]
   [ "$(cr_server_pid)" = "$old" ]
@@ -390,6 +425,14 @@ live_session() {
   run claude-remote-pick --restore "$f"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
+}
+
+@test "--restore with an empty snapshot says there is nothing to restore" {
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  : >"$f"
+  run claude-remote-pick --restore "$f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Keine Sessions wiederherzustellen." ]
 }
 
 @test "--restore inside a foreign tmux restores into the claude-remote server" {

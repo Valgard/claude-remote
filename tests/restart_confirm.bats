@@ -168,6 +168,25 @@ nothing_stopped() {
   [[ "${output##*Claude-Sessions:}" == *"1) keep"* ]]
 }
 
+@test "picker: s, j on a server holding only the anchor restarts it" {
+  # Both snapshots are empty: the re-check must not ask again, and execute must run.
+  export CR_LAUNCHCTL="$(agent_stub "touch '$BATS_TEST_TMPDIR/launchctl.called'; $CR_TMUX new-session -d -s _cr_anchor")"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  old=$(cr_server_pid)
+  run env -u TMUX claude-remote-pick <<<$'s\nj\n\nq'
+  [ "$status" -eq 0 ]
+  # The plain line comes with the question, i.e. before execute prints anything (read -p
+  # shows its prompt only on a terminal, so the [j/N] itself is not in the output).
+  [[ "$output" == *"Keine Sessions – nur Anchor und tmux-Server werden neu gestartet."*"Snapshot: "* ]]
+  [[ "$output" != *"geändert"* ]]
+  [[ "$output" == *"Beende Anchor und Server …"*"Keine Sessions wiederherzustellen."* ]]
+  [ "$(menu_reads)" -eq 2 ]
+  [ -e "$BATS_TEST_TMPDIR/pgrep.called" ]
+  [ -e "$BATS_TEST_TMPDIR/launchctl.called" ]
+  [ "$(cr_server_pid)" != "$old" ]
+  $CR_TMUX has-session -t "=$CR_ANCHOR"
+}
+
 @test "picker: a fresh snapshot that fails after j stops nothing" {
   # cr_restart_confirm returns 2 and leaves CR_RESTART_SNAP empty; only rc 0 may reach
   # cr_restart_execute. A mktemp that fails the SECOND restart snapshot (the re-check

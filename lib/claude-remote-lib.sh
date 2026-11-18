@@ -686,6 +686,8 @@ cr_restart_snapshot() {
 # cr_restart_summary <snapshot-file>: the German confirmation text for a restart.
 # Mid-turn = ok rows that are busy/waiting (status of skip rows is ignored). awk with
 # an explicit tab FS keeps empty columns in place; `read` with a tab IFS would not.
+# A snapshot without rows says plainly that only anchor and server restart, so a user
+# who knows of sessions sees before answering that the snapshot missed them.
 cr_restart_summary() {
   awk -F'\t' '
     { total++ }
@@ -696,6 +698,10 @@ cr_restart_summary() {
     }
     $4 != "ok" { lost = lost "  - " $1 ": " $5 "\n" }
     END {
+      if (!total) {
+        print "Keine Sessions – nur Anchor und tmux-Server werden neu gestartet."
+        exit
+      }
       print "Anchor und tmux-Server werden neu gestartet."
       printf "Wiederherstellen: %d von %d Sessions\n", ok, total
       if (mid != "") printf "⚠️  Mitten in einer Antwort – der laufende Turn geht verloren:\n%s", mid
@@ -825,13 +831,18 @@ _cr_session_live() {
 # last worked somewhere other than their start dir are listed with that dir: they now
 # run in the start dir. The `skip` rows are listed with their reason, so every pane of
 # the old server is named after the restart too. Report on stdout (German; empty
-# sections omitted). Returns 0 iff every `ok` row was restored.
+# sections omitted); a snapshot without rows (a server that held only the anchor) just
+# says there is nothing to restore. Returns 0 iff every `ok` row was restored.
 cr_restore_sessions() {
   local file=$1 rows line rest name pid start sid cwd args label new tok mark holder
   local total=0 restored=0 failed="" dropped="" launched="" entry new_name cap
   local kept drop active="" drift="" noanchor=0 lost
   rows="$(awk -F'\t' '$4 == "ok"' "$file")" || return 1
   lost="$(awk -F'\t' '$4 != "ok" { print "  - " $1 ": " $5 }' "$file")" || return 1
+  if [ -z "$rows" ] && [ -z "$lost" ]; then
+    echo "Keine Sessions wiederherzustellen."
+    return 0
+  fi
   if [ -n "$rows" ]; then
     while IFS= read -r line; do
       total=$((total + 1))
@@ -999,11 +1010,23 @@ _cr_restart_agent_loaded() {
   return 1
 }
 
+# _cr_server_only_anchor: 0 iff the server answers and holds no session but $CR_ANCHOR.
+_cr_server_only_anchor() {
+  local names
+  # shellcheck disable=SC2086
+  names="$($CR_TMUX list-sessions -F '#{session_name}' 2>/dev/null)" || return 1
+  printf '%s\n' "$names" | awk -v a="$CR_ANCHOR" 'length($0) && $0 != a { other = 1 } END { exit other }'
+}
+
 # _cr_restart_run <snapshot-file>: the phases of cr_restart_execute, one German progress
 # line each. Before anything is stopped it checks two preconditions and refuses without
-# them: a snapshot file that exists, is readable and is not empty (it is the only way
-# back), and a loaded anchor LaunchAgent (it is the only thing that may birth the new
-# server); without either the restart would end every session and bring nothing back.
+# them: a snapshot file that exists and is readable (it is the only way back), and a
+# loaded anchor LaunchAgent (it is the only thing that may birth the new server);
+# without either the restart would end every session and bring nothing back. An EMPTY
+# snapshot is legitimate only for a server that holds nothing but the anchor, which a
+# fresh query must confirm; otherwise its write failed and it is refused too. That
+# restart still matters: only replacing the anchor instance cures a stale one, while a
+# bare kill-server would let the old supervisor re-birth the server in its context.
 # After the stop it waits (up to 10 s) for the `ok` rows' old pane processes to exit:
 # one still exiting would look like a live holder of its session to the restore (which
 # then fails that row rather than counting it).
@@ -1012,8 +1035,12 @@ _cr_restart_agent_loaded() {
 # it, while the restore runs on (HUP is ignored); the file is what is left to read.
 _cr_restart_run() {
   local file=$1 old pids n rc=0 report out
-  if [ ! -f "$file" ] || [ ! -r "$file" ] || [ ! -s "$file" ]; then
-    echo "Snapshot-Datei $file fehlt, ist leer (keine Sessions) oder nicht lesbar – es wurde nichts beendet."
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    echo "Snapshot-Datei $file fehlt oder ist nicht lesbar – es wurde nichts beendet."
+    return 1
+  fi
+  if [ ! -s "$file" ] && ! _cr_server_only_anchor; then
+    echo "Snapshot-Datei $file ist leer, der Server hat aber Sessions – es wurde nichts beendet."
     return 1
   fi
   _cr_restart_agent_loaded || return 1
@@ -1044,7 +1071,7 @@ _cr_restart_run() {
     _cr_restart_note "$report" "Anchor/Server kam nicht hoch. Wiederherstellen, sobald er läuft: claude-remote-pick --restore $file"
     return 1
   fi
-  echo "Stelle $n Sessions wieder her …"
+  [ "$n" -eq 0 ] || echo "Stelle $n Sessions wieder her …"
   # The restore prints its report only at the end, so collecting it costs no progress.
   out="$(cr_restore_sessions "$file")" || rc=$?
   _cr_restart_note "$report" "$out"
