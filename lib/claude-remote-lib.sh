@@ -21,6 +21,26 @@
 # after launching before it checks which sessions died at once.
 : "${CR_RESTART_DIR:=${TMPDIR:-/tmp}}"
 : "${CR_RESTORE_SETTLE:=3}"
+# _cr_seconds_seam <var> <default>: default <var> like the seams above, then hold it
+# to whole seconds, at most eight digits, read as decimal. `30s`, the form direnv's
+# own DIRENV_WARN_TIMEOUT takes and the likely slip, would make the pane's zsh abort
+# its arithmetic before claude starts, a leading zero (08) would make bash read an
+# invalid octal number in the restore's wait, and nine digits overflow the pane's
+# timer. Anything else falls back to <default>, with a warning.
+_cr_seconds_seam() {
+  local value=${!1:-$2}
+  case $value in *[!0-9]* | ?????????*)
+    echo "claude-remote: $1='$value' ist keine ganze Zahl von Sekunden, nehme $2" >&2
+    value=$2
+    ;;
+  esac
+  printf -v "$1" '%s' "$((10#$value))"
+}
+# How long a login-shell pane gives direnv to load the start dir's .envrc before it
+# starts claude without it (0: no limit), and how long a launch that attaches holds
+# direnv's complaint on screen before claude's TUI covers it.
+_cr_seconds_seam CR_DIRENV_TIMEOUT 30
+_cr_seconds_seam CR_DIRENV_HOLD 15
 # Claude Code writes its session title into the terminal title, prefixed with a
 # status glyph (U+2733 + space), and uses a fixed placeholder while no title is
 # set. Both are Claude Code's format, not ours — hence the seams: if either ever
@@ -88,16 +108,139 @@ cr_session_name() {
   printf '%s\n' "$name" | tr ' ./:' '____'
 }
 
+# How a login-shell launch starts claude in the pane, after ~/.zshrc (ADR-001,
+# ADR-004):
+#   zsh -lic "$CR_PANE_LOADER" cr "$CR_PANE_SCRIPT" <direnv limit s> <hold s> <args…>
+# The -c string is parsed after ~/.zshrc, so its aliases would rewrite the script's
+# commands and an option like IGNORE_BRACES would make it unparsable. The loader
+# therefore resets the options to zsh's defaults (`emulate -R` leaves only those
+# describing the terminal, such as MONITOR and ZLE, as they were) and turns aliases
+# off before it parses the script; only the loader's own three words are left
+# exposed. The script's `emulate -L zsh` would turn aliases back on for the $(…) it
+# parses only as it runs, hence `no_aliases` again inside; and since a ~/.zshrc can
+# shadow a builtin with a function (`no_aliases` does not touch functions), the
+# builtins it relies on are called through `builtin`, the external commands through
+# `command`.
+# The script loads the nearest .envrc at or above the start dir, says so when that
+# went wrong, and then execs claude. The exec is load-bearing — inside a function
+# zsh never execs implicitly — and keeps the pid, so the pane process stays claude
+# (the pid join, the exit capture, the Ctrl+Z binding). `command` bypasses a
+# `claude` zsh function, which a user's ~/.zshrc may well point at claude-remote.
+# - direnv: ~/.zshrc only registers _direnv_hook for the next prompt and the next
+#   cd, and the script reaches neither before its exec, so it fires the hook itself.
+#   The hook's existence is the opt-in. Without it nothing loads, but a direnv on
+#   PATH that sees an .envrc here turns that into a reported problem, not the
+#   silence that hid the missing call from 2026-06 to 2026-11. The hook returns
+#   early unless the shell is interactive and not a subshell, hence `-i` and a call
+#   outside any $(…).
+# - Ctrl-C and the limit: the hook runs in a try block whose always arm cancels the
+#   interrupt, so Ctrl-C gives up on direnv rather than on the launch, as at a
+#   terminal prompt; the hold below does the same. The limit is a timer that sends
+#   what Ctrl-C sends: SIGINT to the terminal's foreground process group. That is the
+#   shell's own while direnv runs inside the hook's $(…), but under `-i` a plain
+#   command gets a group of its own, which a SIGINT to the shell's group would miss.
+#   ps pads the group number with blanks, hence the strip. The timer waits in the
+#   zselect builtin, so killing it leaves no sleep behind. A timer firing between
+#   the hook's end and its own kill (the first thing the always arm does) hits the
+#   shell instead, and the arm drops the interrupt: at worst an abort is reported
+#   for an .envrc that loaded. It takes an .envrc that lasts the limit to the
+#   instant.
+# - Output: DIRENV_LOG_FORMAT= silences direnv's status lines, not its errors, and
+#   DIRENV_WARN_TIMEOUT is raised past the limit to keep direnv's own "taking a
+#   while" note out too. Whatever still reaches the error file is a problem, or an
+#   .envrc writing to stderr of its own accord. Without an error file (mktemp
+#   failed) direnv writes straight to the screen, and where there is an .envrc to
+#   load, that failure is the problem.
+# - A problem is printed and, when <hold> > 0 (a launch that attaches), held until a
+#   key or <hold> seconds, as claude's TUI covers it otherwise. Keys typed while the
+#   .envrc loaded are discarded first, or the first of them would skip the hold.
+#   The first line that is not blank once ANSI codes and control characters are
+#   removed goes into the pane option @cr_direnv right before the exec, without
+#   trailing semicolons (tmux reads one as a command separator). `ok` there means no
+#   problem, so a line that cleans up to `ok`, or nothing left at all, is reported in
+#   other words. cr_restore_sessions waits for the option and reports it; setting it
+#   needs `tmux` on the pane's PATH.
+# - The script must hold no single quote, which would end this string.
+# shellcheck disable=SC2016 # expanded by the pane's zsh, not here
+CR_PANE_LOADER='emulate -R zsh; setopt no_aliases; eval "$1"'
+# shellcheck disable=SC2016 # expanded by the pane's zsh, not here
+CR_PANE_SCRIPT='() {
+  emulate -L zsh
+  setopt extendedglob no_aliases
+  local limit=$1 hold=$2 problem= errf= timer= out= clean= reason= line= esc=
+  builtin shift 2
+  if (( ${+functions[_direnv_hook]} )); then
+    if ! errf=$(command mktemp "${TMPDIR:-/tmp}/claude-remote-direnv.XXXXXX" 2>/dev/null); then
+      [[ "$(command direnv status 2>/dev/null)" == *"Found RC path "* ]] &&
+        problem="direnv-Ausgabe nicht prüfbar (mktemp schlug fehl)"
+    fi
+    if (( limit > 0 )); then
+      {
+        if builtin zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+          builtin zselect -t $(( limit * 100 ))
+        else
+          command sleep $limit
+        fi
+        local pg=$(command ps -o tpgid= -p $$ 2>/dev/null)
+        pg=${pg//[^0-9]/}
+        (( pg > 1 )) || pg=$$
+        builtin kill -INT -- -$pg
+      } </dev/null >/dev/null 2>&1 &!
+      timer=$!
+    fi
+    {
+      DIRENV_LOG_FORMAT= DIRENV_WARN_TIMEOUT=$(( limit + 60 ))s _direnv_hook 2>>${errf:-/dev/stderr}
+    } always {
+      [[ -n $timer ]] && builtin kill $timer 2>/dev/null
+      if (( TRY_BLOCK_INTERRUPT )); then
+        TRY_BLOCK_INTERRUPT=0
+        problem="direnv abgebrochen (Zeitlimit von $limit s oder Ctrl-C)"
+      fi
+    }
+    if [[ -n $errf ]]; then
+      [[ -s $errf ]] && out=$(<$errf)
+      command rm -f -- $errf
+    fi
+  elif (( ${+commands[direnv]} )) && [[ "$(command direnv status 2>/dev/null)" == *"Found RC path "* ]]; then
+    problem="direnv ist installiert und hier liegt eine .envrc, aber ~/.zshrc definiert keinen direnv-Hook (_direnv_hook)"
+  fi
+  if [[ -n $problem || -n $out ]]; then
+    builtin print -u2 -r -- "claude-remote: direnv meldet ein Problem mit der .envrc. Claude startet womöglich ohne ihre Variablen."
+    [[ -n $problem ]] && builtin print -u2 -r -- "$problem"
+    [[ -n $out ]] && builtin print -u2 -r -- "$out"
+    if (( hold > 0 )); then
+      while builtin read -t 0 -k1 -s; do :; done
+      builtin print -u2 -rn -- "Weiter mit beliebiger Taste (Claude startet sonst in $hold s) … "
+      { builtin read -k1 -s -t $hold } always { TRY_BLOCK_INTERRUPT=0 }
+      builtin print -u2
+    fi
+    reason=$problem
+    if [[ -z $reason ]]; then
+      builtin printf -v esc "\e"
+      clean=${out//${esc}\[[0-9;]#[[:alpha:]]/}
+      for line in "${(@f)clean}"; do
+        line=${line//[[:cntrl:]]/ }
+        line=${${line##[[:space:]]#}%%[[:space:];]#}
+        [[ -n $line ]] && { reason=$line; break }
+      done
+    fi
+    case $reason in
+      "") reason="direnv gab nur Leerzeilen oder Steuerzeichen aus" ;;
+      ok) reason="ok (Ausgabe der .envrc)" ;;
+    esac
+  fi
+  [[ -n $TMUX ]] && command tmux set-option -p @cr_direnv "${reason:-ok}" 2>/dev/null
+  exec command claude "$@"
+} "${@[2,-1]}"'
+
 # cr_launch <name> <attach:0|1> <wait:0|1> -- <claude args...>
 # Creates a detached tmux session running claude, so pane_pid == claude pid.
-# CR_LOGIN_SHELL=1 (default): launches claude under `zsh -lic` so the pane
-# inherits the full ~/.zshrc environment (PATH, secrets, MCP tokens, etc.).
-# The zsh script is `exec command claude "$@"` — `exec` replaces the shell so
-# the pane_pid stays on the claude process (abtop join invariant intact);
-# `command` bypasses the recursive `claude` zsh function. Before the exec it
-# fires direnv's hook when ~/.zshrc defined one: zsh only runs that hook before
-# a prompt or after a cd, and `zsh -c` reaches neither, so without the explicit
-# call the start directory's .envrc never loads. CR_LOGIN_SHELL=0
+# CR_LOGIN_SHELL=1 (default): runs CR_PANE_SCRIPT under `zsh -lic` (through
+# CR_PANE_LOADER), so the pane gets the full ~/.zshrc environment (PATH, secrets,
+# MCP tokens, etc.) plus the start dir's .envrc before the script execs claude.
+# Only a launch that attaches holds a direnv complaint on screen: a detached one
+# (--no-attach, the restore) has nobody to read it, and claude would only start
+# late. CR_LOGIN_SHELL=0
 # keeps the legacy direct exec form (used by the test harness for hermeticity).
 # Renames the session to <name>-<pane_pid>, arms post-exit capture, then either
 # attaches (cr_attach_and_drain, honouring <wait>) or, in no-attach mode, prints
@@ -108,13 +251,12 @@ cr_launch() {
   local name="$1" attach="$2" wait="$3"
   shift 3
   [ "${1-}" = "--" ] && shift
-  local tmp pid final
+  local tmp pid final hold=0
   tmp="${name}-tmp-$$"
   if [ "${CR_LOGIN_SHELL:-1}" = 1 ]; then
-    # SC2016: the single-quoted '$@' is literal on purpose — zsh expands it in
-    # the pane, not us. SC2086: intentional word-split on $CR_TMUX.
-    # shellcheck disable=SC2086,SC2016
-    $CR_TMUX new-session -d -s "$tmp" -- zsh -lic '(( $+functions[_direnv_hook] )) && _direnv_hook; exec command claude "$@"' cr "$@" || return 1
+    if [ "$attach" = 1 ]; then hold=$CR_DIRENV_HOLD; fi
+    # shellcheck disable=SC2086 # intentional word-split on $CR_TMUX
+    $CR_TMUX new-session -d -s "$tmp" -- zsh -lic "$CR_PANE_LOADER" cr "$CR_PANE_SCRIPT" "$CR_DIRENV_TIMEOUT" "$hold" "$@" || return 1
   else
     # shellcheck disable=SC2086
     $CR_TMUX new-session -d -s "$tmp" -- claude "$@" || return 1
@@ -866,6 +1008,34 @@ _cr_session_live() {
   return 1
 }
 
+# _cr_pane_direnv <session>: what CR_PANE_SCRIPT left in <session>'s @cr_direnv
+# (ok, or the problem); empty until it reports. The trailing colon matters:
+# display-message given a bare `=name` reads an empty option and still succeeds,
+# while `=name:` is that session's pane.
+_cr_pane_direnv() {
+  # shellcheck disable=SC2086
+  $CR_TMUX display-message -p -t "=$1:" '#{@cr_direnv}' 2>/dev/null
+}
+
+# _cr_await_pane_scripts <launched>: wait until every session named in <launched>
+# (new_name<TAB>… lines) is gone or has set @cr_direnv, which CR_PANE_SCRIPT does
+# right before it execs claude. Bounded by CR_DIRENV_TIMEOUT plus 10 s, since the
+# script gives up on direnv at that limit itself; with no limit (0), 10 s. The
+# deadline is shared, so waiting for the sessions one after another costs no longer
+# than waiting for all of them at once.
+_cr_await_pane_scripts() {
+  local entry name deadline=$((SECONDS + CR_DIRENV_TIMEOUT + 10))
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    name=${entry%%$'\t'*}
+    # shellcheck disable=SC2086
+    while [ "$SECONDS" -lt "$deadline" ] && $CR_TMUX has-session -t "=$name" 2>/dev/null &&
+      [ -z "$(_cr_pane_direnv "$name")" ]; do
+      sleep 0.2
+    done
+  done <<<"$1"
+}
+
 # cr_restore_sessions <snapshot-file>: relaunch every `ok` row, in file order, as
 # `claude <kept flags> --resume <session_id>` in the row's start dir under its old label
 # (cr_launch appends the new pid). The rows are split by parameter expansion, never
@@ -885,18 +1055,24 @@ _cr_session_live() {
 # outside the anchor, so once it is gone that row and all remaining ones fail
 # (`kein Anchor-Server`). A row whose args carry a restricting flag
 # (CR_RESTRICT_FLAGS) fails instead of being launched without it.
+# Under a login shell the settle starts once every launched pane has reported from
+# its pane script, or at the wait's deadline (_cr_await_pane_scripts): until then the
+# pane is a live zsh, so a claude that dies at once behind a slow .envrc would be
+# counted as restored. A pane that never reported is listed as such.
 # After one $CR_RESTORE_SETTLE sleep every launched session that no longer exists is
 # reported as having exited at once, with the LAST non-empty line it left behind
 # (Claude's own; a login shell can put .zshrc output before it). Restored sessions that
 # last worked somewhere other than their start dir are listed with that dir: they now
-# run in the start dir. The `skip` rows are listed with their reason, so every pane of
-# the old server is named after the restart too. Report on stdout (German; empty
-# sections omitted); a snapshot without rows (a server that held only the anchor) just
-# says there is nothing to restore. Returns 0 iff every `ok` row was restored.
+# run in the start dir. Restored sessions whose pane script reported a direnv problem
+# (@cr_direnv, see CR_PANE_SCRIPT) are listed with it, since no one saw it on screen.
+# The `skip` rows are listed with their reason, so every pane of the old server is
+# named after the restart too. Report on stdout (German; empty sections omitted); a
+# snapshot without rows (a server that held only the anchor) just says there is
+# nothing to restore. Returns 0 iff every `ok` row was restored.
 cr_restore_sessions() {
   local file=$1 rows line rest who name pid start sid cwd args label new tok mark holder
   local total=0 restored=0 failed="" dropped="" launched="" entry new_name cap
-  local kept drop active="" drift="" noanchor=0 lost
+  local kept drop active="" drift="" noanchor=0 lost envrc direnvmsg=""
   # Each ok row with its who() name in front, so the loop names it without a fork.
   rows="$(awk -F'\t' "$CR_RESTART_WHO_AWK"'$4 == "ok" { print who() "\t" $0 }' "$file")" || return 1
   lost="$(awk -F'\t' "$CR_RESTART_WHO_AWK"'$4 != "ok" { print "  - " who() ": " $5 }' "$file")" || return 1
@@ -978,6 +1154,7 @@ cr_restore_sessions() {
     done <<<"$rows"
   fi
   if [ -n "$launched" ]; then
+    [ "${CR_LOGIN_SHELL:-1}" != 1 ] || _cr_await_pane_scripts "$launched"
     sleep "$CR_RESTORE_SETTLE"
     # new_name<TAB>who<TAB>last_cwd; last_cwd may be empty, so split by hand.
     while IFS= read -r entry; do
@@ -990,6 +1167,14 @@ cr_restore_sessions() {
       if $CR_TMUX has-session -t "=$new_name" 2>/dev/null; then
         restored=$((restored + 1))
         [ -z "$cwd" ] || drift="${drift}  - ${who} → ${cwd}"$'\n'
+        if [ "${CR_LOGIN_SHELL:-1}" = 1 ]; then
+          envrc="$(_cr_pane_direnv "$new_name")"
+          case "$envrc" in
+            ok) ;;
+            "") direnvmsg="${direnvmsg}  - ${who}: keine Rückmeldung aus der Session (hängt sie in ~/.zshrc oder der .envrc, oder fehlt dort tmux?)"$'\n' ;;
+            *) direnvmsg="${direnvmsg}  - ${who}: ${envrc}"$'\n' ;;
+          esac
+        fi
       else
         cap="$(cr_drain_exit_output "$new_name" 2>/dev/null | awk 'NF { last = $0 } END { print last }')"
         failed="${failed}  - ${who}: beendete sich sofort${cap:+: $cap}"$'\n'
@@ -1001,6 +1186,7 @@ cr_restore_sessions() {
   [ -z "$lost" ] || printf 'Nicht wiederherstellbar:\n%s\n' "$lost"
   [ -z "$active" ] || printf 'Bereits aktiv (nicht doppelt gestartet):\n%s' "$active"
   [ -z "$drift" ] || printf 'Arbeiteten zuletzt woanders (laufen jetzt im Startordner):\n%s' "$drift"
+  [ -z "$direnvmsg" ] || printf 'direnv meldete beim Start ein Problem:\n%s' "$direnvmsg"
   [ -z "$dropped" ] || printf 'Weggelassene Argumente:\n%s' "$dropped"
   [ "$restored" -eq "$total" ]
 }

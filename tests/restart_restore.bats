@@ -1,6 +1,10 @@
 #!/usr/bin/env bats
 load helpers
 
+# A restore that waits on a pane which never reports would otherwise hang the run;
+# set here, at file level, since bats reads it before a test body runs.
+BATS_TEST_TIMEOUT=${BATS_TEST_TIMEOUT:-120}
+
 setup() {
   cr_setup
   source "$REPO_ROOT/lib/claude-remote-lib.sh"
@@ -34,6 +38,8 @@ GONE=99999999
   grep -qx '  - proj-11: --name old' <<<"$output"
   [ "$(cat "$FAKE_CLAUDE_ARGV_FILE")" = "--brief --resume S1" ]
   $CR_TMUX list-sessions -F '#{session_name}' | grep -q '^proj-[0-9]*$'
+  # No pane script without a login shell, so nothing to ask it about.
+  [[ "$output" != *"direnv meldete"* ]]
 }
 
 @test "a row whose only off-list args pick the conversation lists no dropped arguments" {
@@ -155,6 +161,97 @@ GONE=99999999
   [ "$status" -eq 1 ]
   [[ "$output" == *"  - proj-11: beendete sich sofort: No conversation found"* ]]
   [[ "$output" == *"Wiederhergestellt: 0 von 1"* ]]
+}
+
+@test "a session that dies after a slow .envrc is not counted as restored" {
+  # The settle check must start once claude runs, not once the pane exists: until
+  # the .envrc is done the pane is a live zsh, whatever claude will do after it.
+  cr_login_shell_env
+  # No exit delay: the 3 s .envrc already outlasts cr_launch's pid read, and any
+  # delay here would eat into the 1 s settle.
+  export FAKE_CLAUDE_EXIT_LINES='No conversation found\n' FAKE_CLAUDE_EXIT_DELAY=0
+  proj="$BATS_TEST_TMPDIR/proj"
+  mkdir -p "$proj"
+  printf 'sleep 3\nexport CR_PROBE=1\n' >"$proj/.envrc"
+  cr_direnv_sandbox "$proj"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  row proj-11 11 "$proj" ok "" S1 idle "" "" >"$f"
+  local t0=$SECONDS
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"  - proj-11: beendete sich sofort: No conversation found"* ]]
+  [[ "$output" == *"Wiederhergestellt: 0 von 1"* ]]
+  # Done once the pane reported, not at the wait's deadline (30 + 10 s).
+  [ "$((SECONDS - t0))" -lt 15 ]
+}
+
+@test "every launched session is waited for, not just the first" {
+  cr_login_shell_env
+  export FAKE_CLAUDE_EXIT_LINES='No conversation found\n' FAKE_CLAUDE_EXIT_DELAY=0
+  slow="$BATS_TEST_TMPDIR/slow" quick="$BATS_TEST_TMPDIR/quick"
+  mkdir -p "$slow" "$quick"
+  # Both .envrc files outlast cr_launch's setup of the session: a claude that exits
+  # before the pane-died hook is armed leaves a held dead pane behind, which counts
+  # as alive. quick reports first; were only it awaited, slow would still be in its
+  # .envrc at the settle and be counted as restored.
+  printf 'sleep 1\nexport CR_PROBE=1\n' >"$quick/.envrc"
+  printf 'sleep 3\nexport CR_PROBE=1\n' >"$slow/.envrc"
+  cr_direnv_sandbox "$slow" "$quick"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  {
+    row quick-11 11 "$quick" ok "" S1 idle "" ""
+    row slow-12 12 "$slow" ok "" S2 idle "" ""
+  } >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Wiederhergestellt: 0 von 2"* ]]
+  [[ "$output" == *"  - quick-11: beendete sich sofort"* ]]
+  [[ "$output" == *"  - slow-12: beendete sich sofort"* ]]
+}
+
+@test "a restored session whose .envrc loaded cleanly is not listed" {
+  cr_login_shell_env
+  proj="$BATS_TEST_TMPDIR/proj"
+  mkdir -p "$proj"
+  echo 'export CR_PROBE=1' >"$proj/.envrc"
+  cr_direnv_sandbox "$proj"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  row proj-11 11 "$proj" ok "" S1 idle "" "" >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
+  [[ "$output" != *"direnv meldete"* ]]
+}
+
+@test "a pane that never reaches the pane script holds the restore only until the deadline" {
+  cr_login_shell_env
+  # A ~/.zshrc that blocks, say on a secret-store dialog, runs before the pane
+  # script, so the script's own limit cannot bound it; with no limit the deadline
+  # is 10 s.
+  echo 'command sleep 600' >>"${ZDOTDIR}/.zshrc"
+  export CR_DIRENV_TIMEOUT=0
+  proj="$BATS_TEST_TMPDIR/proj"
+  mkdir -p "$proj"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  row proj-11 11 "$proj" ok "" S1 idle "" "" >"$f"
+  local t0=$SECONDS
+  run cr_restore_sessions "$f"
+  [ "$((SECONDS - t0))" -lt 20 ]
+  [[ "$output" == *"  - proj-11: keine Rückmeldung aus der Session"* ]]
+}
+
+@test "a restored session whose .envrc direnv refused is listed with direnv's message" {
+  cr_login_shell_env
+  proj="$BATS_TEST_TMPDIR/proj"
+  mkdir -p "$proj"
+  echo 'export CR_PROBE=1' >"$proj/.envrc"
+  cr_direnv_sandbox # nothing allowed
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  row proj-11 11 "$proj" ok "" S1 idle "" "" >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Wiederhergestellt: 1 von 1"* ]]
+  [[ "$output" == *$'direnv meldete beim Start ein Problem:\n  - proj-11: direnv: error '*"is blocked"* ]]
 }
 
 @test "a start path with space and comma restores there" {

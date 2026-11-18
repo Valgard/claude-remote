@@ -6,12 +6,14 @@ if [ -n "${FAKE_CLAUDE_ARGV_FILE:-}" ]; then
   printf '%s\n' "$*" >"$FAKE_CLAUDE_ARGV_FILE"
 fi
 # Env mode (for login-shell launch tests): dump the environment this process was
-# started with, plus its own pid, so a test can assert what reached claude and that
-# it runs as the pane process. Written aside and renamed, so a polling test never
-# reads a half-written file.
+# started with, its own pid and one FAKE_CLAUDE_ARG line per argument, so a test can
+# assert what reached claude, in which order and split how, and that it runs as the
+# pane process. Written aside and renamed, so a polling test never reads half of it.
 if [ -n "${FAKE_CLAUDE_ENV_FILE:-}" ]; then
-  { env && printf 'FAKE_CLAUDE_PID=%s\n' "$$"; } >"${FAKE_CLAUDE_ENV_FILE}.part" &&
-    mv "${FAKE_CLAUDE_ENV_FILE}.part" "$FAKE_CLAUDE_ENV_FILE"
+  {
+    env && printf 'FAKE_CLAUDE_PID=%s\n' "$$"
+    [ "$#" -eq 0 ] || printf 'FAKE_CLAUDE_ARG=%s\n' "$@"
+  } >"${FAKE_CLAUDE_ENV_FILE}.part" && mv "${FAKE_CLAUDE_ENV_FILE}.part" "$FAKE_CLAUDE_ENV_FILE"
 fi
 # Exit mode (for post-exit-output tests): wait long enough for cr_launch to read
 # the pane pid, print the given lines to the pane, then exit — simulating what

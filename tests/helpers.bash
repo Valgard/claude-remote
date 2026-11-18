@@ -27,7 +27,9 @@ cr_setup() {
   mkdir -p "$CR_SESSIONS_DIR" "$FAKE_PS_DIR"
   # Pin the launch seam to direct exec so the suite never sources the real
   # ~/.zshrc (CR_LOGIN_SHELL=1 would run `zsh -lic` in the pane). Hermetic.
+  # The direnv limits start from their defaults, whatever the developer's shell set.
   export CR_LOGIN_SHELL=0
+  unset CR_DIRENV_TIMEOUT CR_DIRENV_HOLD
   # Never reach the real anchor: pgrep/launchctl are pinned to `true`; tests that need a
   # working one install a `stub`. CR_ANCHOR_WAIT keeps the give-up path short.
   export CR_PGREP=true CR_LAUNCHCTL=true CR_ANCHOR_WAIT=2
@@ -149,4 +151,98 @@ stub() {
 agent_stub() {
   stub launchctl "[ \"\$1\" = print ] && exit 0
 $1"
+}
+
+# --- login-shell launches ----------------------------------------------------------
+# cr_login_shell_env: run the CR_LOGIN_SHELL=1 launch for real, against a ZDOTDIR of
+# the test's own, so zsh reads OUR startup files and never the developer's. Its
+# .zshenv turns GLOBAL_RCS off, which is not optional: macOS' /etc/zprofile runs
+# path_helper, and that moves /usr/local/bin (where a real `claude` may live) ahead of
+# the stub dir. It cannot keep out /etc/zshenv, which zsh reads before anything else,
+# so the stub dir is put first again right after. Any DIRENV_* state of the shell
+# that ran bats is dropped, or direnv in the pane would set out to unload it.
+# direnv itself is sandboxed even where no test hooks it, because the pane script
+# asks `direnv status` whenever no hook is defined: a config dir with an empty
+# direnvrc (without one direnv falls back to ~/.direnvrc) and an empty whitelist, a
+# data dir of the test's own, so the developer's allow list is never read, written
+# or `direnv allow`ed. TMPDIR and CR_EXIT_DIR keep the pane's error file and exit
+# capture out of the developer's temp dir. The isolated server is born by the first
+# new-session, so it and its panes inherit all of this. Tests append to
+# $ZDOTDIR/.zshrc themselves.
+cr_login_shell_env() {
+  ZDOTDIR="${BATS_TEST_TMPDIR}/zdot"
+  mkdir -p "$ZDOTDIR"
+  {
+    echo 'unsetopt GLOBAL_RCS'
+    # shellcheck disable=SC2016 # expanded by the pane's zsh, not here
+    printf 'path=(%q $path)\n' "$STUB_BIN"
+  } >"${ZDOTDIR}/.zshenv"
+  : >"${ZDOTDIR}/.zshrc"
+  unset DIRENV_DIR DIRENV_FILE DIRENV_DIFF DIRENV_WATCHES
+  export DIRENV_CONFIG="${BATS_TEST_TMPDIR}/direnv-config" XDG_DATA_HOME="${BATS_TEST_TMPDIR}/xdg-data"
+  mkdir -p "$DIRENV_CONFIG" "$XDG_DATA_HOME"
+  : >"${DIRENV_CONFIG}/direnvrc"
+  cr_direnv_allow
+  export TMPDIR="${BATS_TEST_TMPDIR}/tmp" CR_EXIT_DIR="${BATS_TEST_TMPDIR}/exit"
+  mkdir -p "$TMPDIR"
+  export ZDOTDIR CR_LOGIN_SHELL=1 FAKE_CLAUDE_ENV_FILE="${BATS_TEST_TMPDIR}/claude-env"
+}
+
+# cr_direnv_allow <dir>…: the sandbox's whitelist allows exactly the .envrc in each
+# given dir, and nothing else (none given: everything is blocked). direnv compares
+# resolved paths, hence pwd -P.
+cr_direnv_allow() {
+  local d
+  {
+    printf '[whitelist]\nexact = [\n'
+    for d in "$@"; do printf '  "%s/.envrc",\n' "$(cd "$d" && pwd -P)"; done
+    printf ']\n'
+  } >"${DIRENV_CONFIG}/direnv.toml"
+}
+
+# cr_await <seconds> <command…>: poll until the command succeeds.
+cr_await() {
+  local i n=$(($1 * 10))
+  shift
+  for ((i = 0; i < n; i++)); do
+    "$@" && return 0
+    sleep 0.1
+  done
+  echo "timed out waiting for: $*" >&2
+  return 1
+}
+
+# cr_await_claude_env [seconds]: the pane runs asynchronously to cr_launch; wait (5 s
+# by default) for fake-claude to report from inside it.
+cr_await_claude_env() { cr_await "${1:-5}" test -f "$FAKE_CLAUDE_ENV_FILE"; }
+
+# cr_launch_in <dir> [claude args…]: a detached claude-remote launch from <dir>; the
+# session name it prints lands in $sess.
+cr_launch_in() {
+  local dir="$1"
+  shift
+  sess="$(cd "$dir" && claude-remote --no-attach -l direnv -- "$@")"
+}
+
+# cr_direnv_option: what the pane script reported for $sess (ok, or the problem).
+cr_direnv_option() {
+  ${CR_TMUX} display-message -p -t "$sess" '#{@cr_direnv}'
+}
+
+# cr_direnv_sandbox <dir>…: the real direnv in the sandbox cr_login_shell_env set
+# up, allowing the .envrc in each given dir (cr_direnv_allow), and hooked into the
+# ZDOTDIR's .zshrc the way a user's ~/.zshrc does. Skips the test when direnv is not
+# installed.
+cr_direnv_sandbox() {
+  command -v direnv >/dev/null || skip "direnv is not installed"
+  cr_direnv_allow "$@"
+  # shellcheck disable=SC2016 # expanded by the pane's zsh, not here
+  echo 'eval "$(direnv hook zsh)"' >>"${ZDOTDIR}/.zshrc"
+}
+
+# cr_pane_text <session>: everything the session's pane has printed, blank lines
+# dropped and wrapped lines joined, so an assertion cannot depend on where the pane
+# width happened to break a long path.
+cr_pane_text() {
+  ${CR_TMUX} capture-pane -p -J -S - -E - -t "$1" | grep -v '^$'
 }

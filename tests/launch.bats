@@ -67,15 +67,16 @@ teardown() { cr_teardown; }
   [[ "$output" == *"off"* ]]
 }
 
-# A recording tmux stub: logs the new-session argv (one element per line) and
-# answers display-message with a fixed pid, so we can assert the exact command
-# cr_launch constructs without a real tmux server or a real ~/.zshrc.
+# A recording tmux stub: logs the new-session argv NUL-separated (the login-shell
+# script is one multi-line element) and answers display-message with a fixed pid, so
+# we can assert the exact command cr_launch constructs without a real tmux server or
+# a real ~/.zshrc. Every other subcommand (attach, hooks) succeeds silently.
 _cr_make_tmux_stub() {
   local stub="$1" rec="$2"
   cat >"$stub" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
-  new-session) shift; printf '%s\n' "\$@" >>"$rec" ;;
+  new-session) shift; printf '%s\0' "\$@" >>"$rec" ;;
   display-message) echo 4242 ;;
 esac
 exit 0
@@ -83,105 +84,164 @@ EOF
   chmod +x "$stub"
 }
 
-@test "cr_launch wraps claude in a login shell when CR_LOGIN_SHELL=1" {
-  cd /tmp
-  local stub="${BATS_TEST_TMPDIR}/tmux-stub" rec="${BATS_TEST_TMPDIR}/argv"
+# _cr_recorded_launch <attach> <claude args…>: run cr_launch against the recording
+# stub and leave the recorded argv in the array `argv`. The direnv limits default to
+# 7 and 9 s, unless the caller sets them.
+_cr_recorded_launch() {
+  local stub="${BATS_TEST_TMPDIR}/tmux-stub" rec="${BATS_TEST_TMPDIR}/argv" el attach="$1"
+  shift
   _cr_make_tmux_stub "$stub" "$rec"
-  run env CR_TMUX="$stub" CR_LOGIN_SHELL=1 \
-      CR_EXIT_DIR="${BATS_TEST_TMPDIR}/exit" \
-      bash -c "set -uo pipefail; source '${REPO_ROOT}/lib/claude-remote-lib.sh'; cr_launch proj 0 0 -- --brief"
-  [ "$status" -eq 0 ]
-  # the wrapper script is exactly ONE argv element and hands over to claude last;
-  # what runs before the exec is pinned by the login-shell behaviour tests below
-  [ "$(grep -cE '(^|; )exec command claude "\$@"$' "$rec")" -eq 1 ]
-  grep -qx 'zsh' "$rec"
-  grep -qx -- '-lic' "$rec"
-  grep -qx 'cr' "$rec"
-  grep -qx -- '--brief' "$rec"
-  # no bare `claude` element on its own line in the login-shell form
-  run grep -qx 'claude' "$rec"
-  [ "$status" -ne 0 ]
+  CR_TMUX="$stub" CR_EXIT_DIR="${BATS_TEST_TMPDIR}/exit" \
+    CR_DIRENV_TIMEOUT="${CR_DIRENV_TIMEOUT-7}" CR_DIRENV_HOLD="${CR_DIRENV_HOLD-9}" \
+    bash -c "set -uo pipefail; source '${REPO_ROOT}/lib/claude-remote-lib.sh'; cr_launch proj $attach 0 -- \"\$@\"" _ "$@"
+  argv=()
+  while IFS= read -r -d '' el; do argv+=("$el"); done <"$rec"
+}
+
+@test "cr_launch hands the pane script, the direnv limits and the claude args to a login shell" {
+  cd /tmp
+  CR_LOGIN_SHELL=1 _cr_recorded_launch 0 --brief "two words"
+  source "${REPO_ROOT}/lib/claude-remote-lib.sh"
+  # new-session -d -s <tmp> -- zsh -lic <loader> cr <script> <timeout> <hold> <args…>
+  [ "${argv[3]}" = "--" ]
+  [ "${argv[4]}" = "zsh" ]
+  [ "${argv[5]}" = "-lic" ]
+  # shellcheck disable=SC2016 # the pane's zsh expands it
+  [ "${argv[6]}" = 'emulate -R zsh; setopt no_aliases; eval "$1"' ]
+  [ "${argv[7]}" = "cr" ]
+  [ "${argv[8]}" = "$CR_PANE_SCRIPT" ]
+  [ "${argv[9]}" = "7" ]
+  [ "${argv[10]}" = "0" ] # detached: nobody could read a warning, so no hold
+  [ "${argv[11]}" = "--brief" ]
+  [ "${argv[12]}" = "two words" ]
+  [ "${#argv[@]}" -eq 13 ]
+}
+
+@test "cr_launch holds a direnv warning only for a launch that attaches" {
+  cd /tmp
+  CR_LOGIN_SHELL=1 _cr_recorded_launch 1 --brief
+  [ "${argv[9]}" = "7" ]
+  [ "${argv[10]}" = "9" ]
+}
+
+@test "a non-numeric CR_DIRENV_TIMEOUT or CR_DIRENV_HOLD falls back to its default, with a warning" {
+  cd /tmp
+  CR_LOGIN_SHELL=1 CR_DIRENV_TIMEOUT=30s CR_DIRENV_HOLD=x _cr_recorded_launch 1 --brief 2>"${BATS_TEST_TMPDIR}/err"
+  [ "${argv[9]}" = "30" ]
+  [ "${argv[10]}" = "15" ]
+  grep -q 'CR_DIRENV_TIMEOUT' "${BATS_TEST_TMPDIR}/err"
+  grep -q 'CR_DIRENV_HOLD' "${BATS_TEST_TMPDIR}/err"
+}
+
+@test "a zero-padded limit is read as decimal, and an absurdly long one falls back" {
+  cd /tmp
+  # bash reads 08 as an invalid octal number; nine digits overflow zselect's timer.
+  CR_LOGIN_SHELL=1 CR_DIRENV_TIMEOUT=08 CR_DIRENV_HOLD=123456789 _cr_recorded_launch 1 --brief 2>"${BATS_TEST_TMPDIR}/err"
+  [ "${argv[9]}" = "8" ]
+  [ "${argv[10]}" = "15" ]
+  grep -q 'CR_DIRENV_HOLD' "${BATS_TEST_TMPDIR}/err"
 }
 
 @test "cr_launch execs claude directly when CR_LOGIN_SHELL=0" {
   cd /tmp
-  local stub="${BATS_TEST_TMPDIR}/tmux-stub" rec="${BATS_TEST_TMPDIR}/argv"
-  _cr_make_tmux_stub "$stub" "$rec"
-  run env CR_TMUX="$stub" CR_LOGIN_SHELL=0 \
-      CR_EXIT_DIR="${BATS_TEST_TMPDIR}/exit" \
-      bash -c "set -uo pipefail; source '${REPO_ROOT}/lib/claude-remote-lib.sh'; cr_launch proj 0 0 -- --brief"
-  [ "$status" -eq 0 ]
-  grep -qx 'claude' "$rec"
-  grep -qx -- '--brief' "$rec"
-  run grep -qx 'zsh' "$rec"
-  [ "$status" -ne 0 ]
+  CR_LOGIN_SHELL=0 _cr_recorded_launch 0 --brief
+  [ "${argv[3]}" = "--" ]
+  [ "${argv[4]}" = "claude" ]
+  [ "${argv[5]}" = "--brief" ]
+  [ "${#argv[@]}" -eq 6 ]
 }
 
-# The login-shell launch for real, against a ZDOTDIR of our own: zsh reads OUR
-# .zshrc, never the developer's. GLOBAL_RCS off keeps /etc/z* out as well, which
-# is not optional: macOS' /etc/zprofile runs path_helper, and that moves
-# /usr/local/bin — where a real `claude` may be installed — ahead of the stub dir.
-# The isolated server is born by the first new-session, so it and its panes
-# inherit these exports.
-_cr_login_shell_env() {
-  ZDOTDIR="${BATS_TEST_TMPDIR}/zdot"
-  mkdir -p "$ZDOTDIR"
-  echo 'unsetopt GLOBAL_RCS' >"${ZDOTDIR}/.zshenv"
-  : >"${ZDOTDIR}/.zshrc"
-  export ZDOTDIR CR_LOGIN_SHELL=1 FAKE_CLAUDE_ENV_FILE="${BATS_TEST_TMPDIR}/claude-env"
-}
+# The login-shell launch for real (cr_login_shell_env), with a stand-in for the
+# function `eval "$(direnv hook zsh)"` defines in ~/.zshrc. zsh only calls that
+# function before a prompt or after a cd, and `zsh -c` reaches neither, so it runs
+# only if the launch fires it. tests/direnv.bats drives the real direnv.
 
-# The pane runs asynchronously to cr_launch; wait up to 5 s for the stub's report.
-_cr_await_claude_env() {
-  local i
-  for i in $(seq 50); do
-    [ -f "$FAKE_CLAUDE_ENV_FILE" ] && return 0
-    sleep 0.1
-  done
-  echo "fake-claude never reported from the pane" >&2
-  return 1
-}
-
-@test "a login-shell launch loads direnv for the start directory before claude starts" {
-  _cr_login_shell_env
-  # Stand-in for the function `eval "$(direnv hook zsh)"` defines in ~/.zshrc. zsh
-  # only calls it before a prompt or after a cd, and `zsh -c` reaches neither, so
-  # it runs only if the launch fires it. It records where it ran.
-  echo '_direnv_hook() { export CR_DIRENV_PROBE="${PWD:A}"; }' >"${ZDOTDIR}/.zshrc"
-  cd /tmp
-  run claude-remote --no-attach -l direnv
-  [ "$status" -eq 0 ]
-  _cr_await_claude_env
+@test "a login-shell launch fires the direnv hook in the start directory before claude starts" {
+  cr_login_shell_env
+  echo '_direnv_hook() { export CR_DIRENV_PROBE="${PWD:A}"; }' >>"${ZDOTDIR}/.zshrc"
+  # Born elsewhere, so the start directory cannot be mistaken for the server's.
+  mkdir -p "${BATS_TEST_TMPDIR}/born"
+  (cd "${BATS_TEST_TMPDIR}/born" && ${CR_TMUX} new-session -d -s born 'exec sleep 600')
+  cr_launch_in /tmp
+  cr_await_claude_env
   grep -qx "CR_DIRENV_PROBE=$(cd /tmp && pwd -P)" "$FAKE_CLAUDE_ENV_FILE"
 }
 
+@test "a login-shell launch passes every claude argument through, in order and unsplit" {
+  cr_login_shell_env
+  cr_launch_in /tmp --model opus "two words" --brief
+  cr_await_claude_env
+  [ "$(grep '^FAKE_CLAUDE_ARG=' "$FAKE_CLAUDE_ENV_FILE")" = "$(printf 'FAKE_CLAUDE_ARG=%s\n' --model opus "two words" --brief)" ]
+}
+
 @test "a login-shell launch that loads direnv still leaves claude as the pane process" {
-  _cr_login_shell_env
-  # The TRAPEXIT is what makes this test bite: zsh execs the last command of a
-  # `-c` script implicitly, so a launch that lost its `exec` would keep the pid
-  # anyway — unless an exit trap obliges zsh to outlive it, as a ~/.zshrc may.
-  printf '%s\n' '_direnv_hook() { export CR_DIRENV_PROBE=1; }' 'TRAPEXIT() { :; }' >"${ZDOTDIR}/.zshrc"
-  cd /tmp
-  run claude-remote --no-attach -l pid
-  [ "$status" -eq 0 ]
-  _cr_await_claude_env
-  local sess pane_pid
-  sess="$(${CR_TMUX} list-sessions -F '#{session_name}')"
+  cr_login_shell_env
+  # The pane script runs claude from inside a function, where zsh never execs on its
+  # own, so a lost `exec` splits the pid by itself. The TRAPEXIT keeps the test biting
+  # should the exec ever move to the top level of the -c string, where zsh would exec
+  # the last command implicitly unless an exit trap obliges it to outlive it.
+  printf '%s\n' '_direnv_hook() { export CR_DIRENV_PROBE=1; }' 'TRAPEXIT() { :; }' >>"${ZDOTDIR}/.zshrc"
+  cr_launch_in /tmp
+  cr_await_claude_env
+  local pane_pid
   pane_pid="$(${CR_TMUX} display-message -p -t "$sess" '#{pane_pid}')"
   grep -qx "FAKE_CLAUDE_PID=${pane_pid}" "$FAKE_CLAUDE_ENV_FILE"
   [ "${sess##*-}" = "$pane_pid" ]
 }
 
-@test "a login-shell launch without a direnv hook starts claude without an error" {
-  _cr_login_shell_env
-  cd /tmp
-  run claude-remote --no-attach -l nohook
-  [ "$status" -eq 0 ]
-  _cr_await_claude_env
-  local sess
-  sess="$(${CR_TMUX} list-sessions -F '#{session_name}')"
+@test "a login-shell launch runs the claude binary, never a claude shell function" {
+  cr_login_shell_env
+  # A user's ~/.zshrc may well define claude() as `claude-remote …`; without the
+  # `command` every pane would launch another session, without end.
+  echo "claude() { : >${BATS_TEST_TMPDIR}/recursed; }" >>"${ZDOTDIR}/.zshrc"
+  cr_launch_in /tmp
+  cr_await_claude_env
+  [ ! -e "${BATS_TEST_TMPDIR}/recursed" ]
+}
+
+@test "the direnv time limit is called off once the hook is done" {
+  cr_login_shell_env
+  echo '_direnv_hook() { :; }' >>"${ZDOTDIR}/.zshrc"
+  export CR_DIRENV_TIMEOUT=1
+  cr_launch_in /tmp
+  cr_await_claude_env
+  # A timer left running would interrupt claude itself once the limit is up.
+  sleep 2.5
+  ${CR_TMUX} has-session -t "=$sess"
+  kill -0 "$(sed -n 's/^FAKE_CLAUDE_PID=//p' "$FAKE_CLAUDE_ENV_FILE")"
+}
+
+@test "options and aliases a ~/.zshrc sets cannot bend the pane script" {
+  cr_login_shell_env
+  # Each would break the script as parsed or run in the user's settings: braces
+  # stop being syntax, arrays start at 0, any failing command exits the shell,
+  # aliases rewrite the commands the script calls — also inside the $(…) it parses
+  # only when it runs — and functions shadow builtins: a dead kill would leave the
+  # limit unenforced, a dead shift would hand the limit and the hold to claude as
+  # arguments. The functions come before the aliases, which would rewrite them too:
+  # `kill() …` after `alias kill=false` defines a function named false. The hook
+  # outlasts the limit, so the timer and the interrupt handling run under all of it.
+  cat >>"${ZDOTDIR}/.zshrc" <<'EOF'
+_direnv_hook() { command sleep 5; }
+kill() { :; }
+shift() { :; }
+setopt ignore_braces ksh_arrays err_exit
+alias kill=false print=false printf=false read=false local=false command=false
+EOF
+  export CR_DIRENV_TIMEOUT=1
+  cr_launch_in /tmp --brief
+  cr_await_claude_env 4
+  [ "$(cr_direnv_option)" = "direnv abgebrochen (Zeitlimit von 1 s oder Ctrl-C)" ]
+  [ "$(grep '^FAKE_CLAUDE_ARG=' "$FAKE_CLAUDE_ENV_FILE")" = "FAKE_CLAUDE_ARG=--brief" ]
+}
+
+@test "a login-shell launch without direnv in play starts claude silently and reports ok" {
+  cr_login_shell_env
+  cr_launch_in /tmp
+  cr_await_claude_env
   # an unguarded call would leave `command not found: _direnv_hook` in the pane
-  run bash -c "${CR_TMUX} capture-pane -p -S - -E - -t '$sess'"
-  [ "$status" -eq 0 ]
+  run cr_pane_text "$sess"
   [[ "$output" != *_direnv_hook* ]]
+  [[ "$output" != *claude-remote:* ]]
+  [ "$(cr_direnv_option)" = ok ]
 }
