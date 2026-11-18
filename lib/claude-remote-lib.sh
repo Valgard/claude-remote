@@ -437,7 +437,8 @@ cr_stop_anchor_and_server() {
   # shellcheck disable=SC2086
   _cr_wait_gone 5 $pids && pids=""
   if [ -n "$pids" ]; then
-    # Only the survivors: a pid that exited after TERM may already name another process.
+    # Skip pids that are already gone. This does not detect a pid reused during the
+    # wait (it would pass kill -0 too); only the command-line check before TERM did.
     for pid in $pids; do
       if kill -0 "$pid" 2>/dev/null; then
         kill -KILL "$pid" 2>/dev/null
@@ -1026,7 +1027,8 @@ _cr_server_only_anchor() {
 # loaded anchor LaunchAgent (it is the only thing that may birth the new server);
 # without either the restart would end every session and bring nothing back. An EMPTY
 # snapshot is legitimate only for a server that holds nothing but the anchor, which a
-# fresh query must confirm; otherwise its write failed and it is refused too. That
+# fresh query must confirm; otherwise it does not cover the sessions the stop would end
+# (one started after the snapshot, or a file the picker did not write) and is refused. That
 # restart still matters: only replacing the anchor instance cures a stale one, while a
 # bare kill-server would let the old supervisor re-birth the server in its context.
 # After the stop it waits (up to 10 s) for the `ok` rows' old pane processes to exit:
