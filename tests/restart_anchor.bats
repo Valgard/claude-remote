@@ -8,7 +8,7 @@ setup() {
 teardown() {
   # KILL, not TERM: the "ignore" stand-in survives TERM. Only ever our own pids.
   local p
-  for p in ${sup:-} ${foreign:-} ${lookalike:-}; do
+  for p in ${sup:-} ${foreign:-} ${lookalike:-} ${holder:-}; do
     kill -KILL "$p" 2>/dev/null || true
   done
   cr_teardown
@@ -83,6 +83,30 @@ wait_ready() {
   [ "$status" -ne 0 ]
   run $CR_TMUX list-sessions
   [ "$status" -ne 0 ]
+}
+
+@test "stop leaves the server alone when a supervisor survives KILL" {
+  # A zombie stands in for a supervisor that no signal ends: kill -0 still finds it, and
+  # it stays while its parent (the exec'd sleep, our own child) lives, so its pid cannot
+  # be reused by a foreign process. Teardown KILLs the parent, which reaps the zombie.
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  local zfile="$BATS_TEST_TMPDIR/zombie" i=0 z old
+  bash -c 'sleep 0 & echo $! >"$1"; exec sleep 60' _ "$zfile" 3>&- &
+  holder=$!
+  while [ ! -s "$zfile" ] && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  z=$(cat "$zfile")
+  supervisor_args "$z"
+  export CR_PGREP="$(stub pgrep "echo $z")"
+  old=$(cr_server_pid)
+  run cr_stop_anchor_and_server
+  [ "$status" -eq 1 ]
+  run kill -0 "$z"
+  [ "$status" -eq 0 ]
+  [ "$(cr_server_pid)" = "$old" ]
+  $CR_TMUX has-session -t "=$CR_ANCHOR"
 }
 
 @test "stop never signals a process that merely mentions the supervisor" {

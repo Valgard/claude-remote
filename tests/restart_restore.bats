@@ -448,3 +448,31 @@ live_session() {
   run $CR_TMUX list-sessions
   [ "$status" -ne 0 ]
 }
+
+@test "an anchor lost after the first launch fails every later row and births no server" {
+  # A tmux wrapper kills the server right after the first row's rename-session, i.e.
+  # once that row is launched. Checking the anchor only before the first launch would
+  # let row 2's new-session birth a fresh server outside the anchor.
+  export CR_EXIT_DIR="$BATS_TEST_TMPDIR/exit"
+  local real="$CR_TMUX" marker="$BATS_TEST_TMPDIR/killed"
+  export CR_TMUX="$(stub tmux-dies "$real \"\$@\"
+rc=\$?
+if [ \"\$1\" = rename-session ] && [ ! -e '$marker' ]; then : >'$marker'; $real kill-server; fi
+exit \$rc")"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  {
+    row proj-11 11 /tmp ok "" S1 idle "" ""
+    row proj-12 12 /tmp ok "" S2 idle "" ""
+    row proj-13 13 /tmp ok "" S3 idle "" ""
+  } >"$f"
+  run cr_restore_sessions "$f"
+  export CR_TMUX="$real"
+  [ "$status" -eq 1 ]
+  [ -e "$marker" ]
+  [[ "$output" == *"Wiederhergestellt: 0 von 3"* ]]
+  [[ "$output" == *"  - proj-11: beendete sich sofort"* ]]
+  [[ "$output" == *"  - proj-12: kein Anchor-Server"* ]]
+  [[ "$output" == *"  - proj-13: kein Anchor-Server"* ]]
+  run $CR_TMUX list-sessions
+  [ "$status" -ne 0 ]
+}

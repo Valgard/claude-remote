@@ -168,6 +168,30 @@ nothing_stopped() {
   [[ "${output##*Claude-Sessions:}" == *"1) keep"* ]]
 }
 
+@test "picker: a fresh snapshot that fails after j stops nothing" {
+  # cr_restart_confirm returns 2 and leaves CR_RESTART_SNAP empty; only rc 0 may reach
+  # cr_restart_execute. A mktemp that fails the SECOND restart snapshot (the re-check
+  # after "j") drives that path; the loop's own `mktemp -d` passes through.
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  cr_make_session proj-1 >/dev/null
+  server=$(cr_server_pid)
+  local mt="$BATS_TEST_TMPDIR/mt"
+  mkdir -p "$mt"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    "case \"\$*\" in *claude-remote-restart-*) c='$BATS_TEST_TMPDIR/mt.n'; [ -e \"\$c\" ] && exit 1; : >\"\$c\" ;; esac" \
+    'exec /usr/bin/mktemp "$@"' >"$mt/mktemp"
+  chmod +x "$mt/mktemp"
+  run env -u TMUX PATH="$mt:$PATH" claude-remote-pick <<<$'s\nj\n\nq'
+  [ "$status" -eq 0 ]
+  [ -e "$BATS_TEST_TMPDIR/mt.n" ]
+  [[ "$output" == *"Snapshot-Datei in $CR_RESTART_DIR konnte nicht geschrieben werden – es wurde nichts beendet."* ]]
+  # cr_restart_execute was never called (it would refuse the empty path with this).
+  [[ "$output" != *"fehlt, ist leer"* ]]
+  [ "$(menu_reads)" -eq 2 ]
+  nothing_stopped "$server"
+  [ -z "$(snapshots)" ]
+}
+
 @test "picker: inside the server it would restart, it refuses and stops nothing" {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   cr_make_session proj-1 >/dev/null
