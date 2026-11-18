@@ -128,9 +128,9 @@ The branch on `$CR_TAC` availability (rather than `tac … || tail -r …`) cost
 
 ## Tests
 
-bats-core suite under `tests/`, one file per concern (`join`, `render`, `pane_map`, `name`, `fallback`, `pick`, `launch`, `install`, `path`, `resolve`, `locale`, `sshd`, `abtop_parse`, `anchor`, `exit_output`, `kill`, `ctrl_z`, `title`, `pane_title`, `restart_anchor`, `restart_args`, `restart_confirm`, `restart_probe`, `restart_restore`, `restart_snapshot`, `restart_summary`). Each sources `tests/helpers.bash` via `load helpers`:
+bats-core suite under `tests/`, one file per concern (`join`, `render`, `pane_map`, `name`, `fallback`, `pick`, `launch`, `install`, `path`, `resolve`, `locale`, `sshd`, `abtop_parse`, `anchor`, `exit_output`, `kill`, `ctrl_z`, `title`, `pane_title`, `restart_anchor`, `restart_args`, `restart_confirm`, `restart_probe`, `restart_restore`, `restart_snapshot`, `restart_summary`, `teardown`). Each sources `tests/helpers.bash` via `load helpers`:
 
-- `cr_setup` / `cr_teardown` — isolated tmux server (unique `-L` socket per test), stub `abtop` and `claude` on PATH.
+- `cr_setup` / `cr_teardown` — isolated tmux server (unique `-L` socket per test), stub `abtop` and `claude` on PATH. `cr_teardown` ends that server by its socket path (`CR_SOCKET_FILE`) with the tmux `cr_setup` resolved (`CR_REAL_TMUX`), never through `CR_TMUX`, which a failed test may leave on a stand-in; a surviving server holds bats' fd 3 and hangs the run. It then deletes the socket file, which tmux 3.8 leaves behind on exit, but only once nothing accepts on it; otherwise the test fails and the file stays.
 - `cr_make_session <name>` — start a fake-claude session and echo its `pane_pid`.
 - The `fake-claude` stub has an exit mode (`FAKE_CLAUDE_EXIT_LINES`, optional `FAKE_CLAUDE_EXIT_DELAY`): instead of sleeping forever it waits, prints the given lines, and exits — used by `exit_output.bats` to drive the `pane-died` capture end to end (it inherits the env via the tmux server, so export before the first tmux call).
 - The `ps-stub` (`CR_PS`) answers `-o args=` / `-o lstart=` from `$FAKE_PS_DIR/<pid>.{args,lstart}`, whether or not that pid exists. `FAKE_PS_LIVE=1` makes it answer only while the pid is alive, as the real `ps` does — set it only in tests whose pids are processes the test started itself.

@@ -10,6 +10,11 @@ cr_setup() {
   # and an assertion can pass on the user's own settings instead of ours.
   CR_SOCKET="cr_test_${BATS_SUITE_TEST_NUMBER}_$$"
   export CR_TMUX="tmux -f /dev/null -L ${CR_SOCKET}"
+  # Where tmux puts that socket, recorded while TMUX_TMPDIR is still the one the server
+  # will use (cr_prod_setup moves it, cr_prod_teardown unsets it). And the tmux the
+  # teardowns end servers with, resolved before the stub dir goes onto PATH below.
+  CR_SOCKET_FILE="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/${CR_SOCKET}"
+  CR_REAL_TMUX="$(command -v tmux)"
   export CR_ABTOP="${REPO_ROOT}/tests/fixtures/abtop-stub"
   # Isolate the transcript lookup too: without this, any test driving cr_menu_lines
   # probes the developer's real ~/.claude/projects (~100 dirs). Harmless only as long
@@ -38,10 +43,34 @@ cr_setup() {
 }
 
 cr_teardown() {
-  # Production-shape servers first: it unsets TMUX_TMPDIR, which would otherwise
-  # relocate the -L socket below and miss a server started before cr_prod_setup.
   cr_prod_teardown
-  ${CR_TMUX} kill-server 2>/dev/null || true
+  # The -L server goes by the socket path and the tmux cr_setup recorded, never through
+  # CR_TMUX, which may still name a stand-in that a failed test did not restore. A server
+  # that survives keeps bats' fd 3 open and hangs the run. tmux leaves its socket file
+  # behind when the server exits (tmux 3.8, after kill-server and a natural exit alike),
+  # so the file is deleted here, but only once nothing accepts on it any more: deleting
+  # a live server's socket would leave that server out of reach of -L and -S alike, so
+  # a survivor fails the test instead. A -L server started after cr_prod_setup lives
+  # under that dir and went with cr_prod_teardown above.
+  [ -S "${CR_SOCKET_FILE:-}" ] || return 0
+  "$CR_REAL_TMUX" -S "$CR_SOCKET_FILE" kill-server 2>/dev/null || true
+  local tries=0
+  while cr_socket_live "$CR_SOCKET_FILE" && [ "$tries" -lt 25 ]; do
+    sleep 0.2
+    tries=$((tries + 1))
+  done
+  if cr_socket_live "$CR_SOCKET_FILE"; then
+    echo "cr_teardown: a server still accepts on $CR_SOCKET_FILE; socket kept" >&2
+    return 1
+  fi
+  rm -f "$CR_SOCKET_FILE"
+}
+
+# cr_socket_live <path>: true while a server accepts connections on <path>. A plain
+# connect, not a tmux command, so it also answers for a server of another tmux version.
+# (`nc -z -U` cannot stand in: it fails against a live socket too, measured on macOS.)
+cr_socket_live() {
+  /usr/bin/perl -MIO::Socket::UNIX -e 'exit(IO::Socket::UNIX->new(Peer => $ARGV[0]) ? 0 : 1)' "$1"
 }
 
 # --- production-shape tests ------------------------------------------------------
@@ -89,7 +118,7 @@ cr_prod_teardown() {
   local sock
   if [ -n "${TMUX_TMPDIR:-}" ] && [ -d "$TMUX_TMPDIR" ]; then
     find "$TMUX_TMPDIR" -type s | while IFS= read -r sock; do
-      tmux -S "$sock" kill-server 2>/dev/null || true
+      "${CR_REAL_TMUX:-tmux}" -S "$sock" kill-server 2>/dev/null || true
     done
   fi
   rm -rf "$CR_PROD_TMPDIR"
