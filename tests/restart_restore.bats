@@ -44,6 +44,19 @@ GONE=99999999
   [ "$($CR_TMUX list-sessions -F '#{session_name}' | grep -c '^proj-[0-9]*$')" -eq 2 ]
 }
 
+@test "a row carrying a restricting flag is never launched without it" {
+  # Defence in depth for a snapshot that marks such a row ok (older or hand-edited).
+  export FAKE_CLAUDE_ARGV_FILE="$BATS_TEST_TMPDIR/argv"
+  $CR_TMUX new-session -d -s "$CR_ANCHOR"
+  row proj-11 11 /tmp ok "" S1 idle "" "--brief --tools Read" >"$f"
+  run cr_restore_sessions "$f"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"  - proj-11: einschränkende Startoptionen (nicht sicher übertragbar)"* ]]
+  [[ "$output" == *"Wiederhergestellt: 0 von 1"* ]]
+  [ ! -e "$FAKE_CLAUDE_ARGV_FILE" ]
+  [ "$($CR_TMUX list-sessions -F '#{session_name}' | grep -c '^proj-')" -eq 0 ]
+}
+
 @test "a missing start dir fails that row only" {
   $CR_TMUX new-session -d -s "$CR_ANCHOR"
   {

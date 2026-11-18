@@ -48,3 +48,24 @@ dropped() { cr_rewrite_claude_args "$@" | awk -F'\t' '$1=="-"{print $2}' | paste
   [ "$(kept SID --strict-mcp-config --mcp-config a.json --brief)" = "--brief --resume SID" ]
   [ "$(dropped SID --strict-mcp-config --mcp-config a.json --brief)" = "--strict-mcp-config --mcp-config a.json" ]
 }
+
+@test "every restricting flag is detected, in both spellings and the =value form" {
+  local flag
+  for flag in --disallowedTools --disallowed-tools --allowedTools --allowed-tools \
+    --tools --settings --permission-prompt-tool; do
+    cr_drops_restriction --brief "$flag" "Bash(rm *)"
+    cr_drops_restriction "$flag=x" --brief
+  done
+  cr_drops_restriction --strict-mcp-config --brief
+  cr_drops_restriction --brief --strict-mcp-config=true
+}
+
+@test "args without a restricting flag are not flagged" {
+  run cr_drops_restriction --allow-dangerously-skip-permissions --brief --resume t --name n fix it
+  [ "$status" -eq 1 ]
+  run cr_drops_restriction
+  [ "$status" -eq 1 ]
+  # Only a whole flag counts, not a word that merely starts like one.
+  run cr_drops_restriction --toolsmith --settingsfile
+  [ "$status" -eq 1 ]
+}

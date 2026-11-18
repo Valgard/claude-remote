@@ -381,10 +381,17 @@ cr_ensure_anchor() {
 # Launch flags that stay as they are when a session is relaunched after a server
 # restart (the allowlist; everything else is dropped). Not --strict-mcp-config: it means
 # "only the servers from --mcp-config", and --mcp-config is always dropped, so keeping
-# it alone would bring the session back without any MCP server.
+# it alone would bring the session back without any MCP server. Dropping it would widen
+# the session instead, so a session started with it is not restorable at all (see
+# CR_RESTRICT_FLAGS).
 CR_KEEP_FLAGS="--allow-dangerously-skip-permissions --dangerously-skip-permissions --brief --chrome --no-chrome --ide --verbose --ax-screen-reader --disable-slash-commands --bare --safe-mode --restricted"
 # Allowlisted flags that take a value; kept together with the next token.
 CR_KEEP_VALUE_FLAGS="--model --fallback-model --effort --permission-mode --agent --autocompact --setting-sources --system-prompt-snapshot"
+# Launch flags that restrict what a session may do (tools, settings with deny rules, MCP
+# servers, the permission prompt). None is on the allowlist, so a relaunch would drop
+# it and bring the session back with FEWER restrictions than it ran with; a session
+# started with one is therefore not restorable at all (also in its --flag=value form).
+CR_RESTRICT_FLAGS="--disallowedTools --disallowed-tools --allowedTools --allowed-tools --tools --settings --strict-mcp-config --permission-prompt-tool"
 
 # cr_server_pid: print the running tmux server's pid; return 1 when none runs.
 cr_server_pid() {
@@ -532,6 +539,21 @@ cr_rewrite_claude_args() {
   printf '+\t--resume\n+\t%s\n' "$sid"
 }
 
+# cr_drops_restriction [<arg>...]: 0 iff cr_rewrite_claude_args would drop a restricting
+# flag (CR_RESTRICT_FLAGS, as a whole token or as --flag=value) from these launch args.
+cr_drops_restriction() {
+  local line flag
+  while IFS= read -r line; do
+    [ "${line%%$'\t'*}" = - ] || continue
+    flag=${line#*$'\t'}
+    flag=${flag%%=*}
+    case " $CR_RESTRICT_FLAGS " in
+      *" $flag "*) return 0 ;;
+    esac
+  done < <(cr_rewrite_claude_args - "$@")
+  return 1
+}
+
 # cr_session_record <pid>: one line `session_id<TAB>kind<TAB>status<TAB>proc_start` from
 # $CR_SESSIONS_DIR/<pid>.json. A missing or non-string field is empty and control
 # characters are flattened to spaces (as in cr_session_title), so a tab cannot tear the
@@ -593,12 +615,21 @@ cr_last_cwd() {
   return 0
 }
 
+# _cr_args_drop_restriction <space-joined args>: cr_drops_restriction on the args split
+# the way cr_restore_sessions splits them (on blanks, never globbing).
+_cr_args_drop_restriction() {
+  local words
+  IFS=$' \t\n' read -r -a words <<<"$1"
+  [ "${#words[@]}" -gt 0 ] && cr_drops_restriction "${words[@]}"
+}
+
 # cr_restart_snapshot: one TSV row per pane of every session except $CR_ANCHOR:
 #   name  pid  start  verdict  reason  session_id  status  last_cwd  args
 # verdict is `ok` or `skip`; the first failing check sets the (German) reason:
 # not a claude process, no/garbled session file, session file of another process
-# (pid reuse), not interactive, no session id. last_cwd is where the transcript last
-# worked, left empty when unknown or equal to start. Returns 1 when no server runs.
+# (pid reuse), not interactive, no session id, a restricting launch flag the relaunch
+# would drop (CR_RESTRICT_FLAGS). last_cwd is where the transcript last worked, left
+# empty when unknown or equal to start. Returns 1 when no server runs.
 cr_restart_snapshot() {
   local panes name pid start verdict reason sid kind sstat pstart args cwd rec rc
   # shellcheck disable=SC2086
@@ -632,6 +663,8 @@ cr_restart_snapshot() {
           reason="keine interaktive Session"
         elif [ -z "$sid" ]; then
           reason="keine Session-ID"
+        elif _cr_args_drop_restriction "$args"; then
+          reason="einschränkende Startoptionen (nicht sicher übertragbar)"
         else
           verdict=ok
           cwd="$(cr_last_cwd "$(cr_session_file "$sid")")"
@@ -777,7 +810,8 @@ _cr_session_live() {
 # fails (`alter Prozess läuft noch`) and the retry hint is printed. Before EVERY launch
 # the anchor session must exist: cr_launch's new-session would otherwise birth a server
 # outside the anchor, so once it is gone that row and all remaining ones fail
-# (`kein Anchor-Server`).
+# (`kein Anchor-Server`). A row whose args carry a restricting flag
+# (CR_RESTRICT_FLAGS) fails instead of being launched without it.
 # After one $CR_RESTORE_SETTLE sleep every launched session that no longer exists is
 # reported as having exited at once, with the LAST non-empty line it left behind
 # (Claude's own; a login shell can put .zshrc output before it). Restored sessions that
@@ -837,6 +871,11 @@ cr_restore_sessions() {
       # shellcheck disable=SC2086
       set -- $args
       set +f
+      # The snapshot already marks such a row skip; this holds for any file handed in.
+      if cr_drops_restriction "$@"; then
+        failed="${failed}  - ${name}: einschränkende Startoptionen (nicht sicher übertragbar)"$'\n'
+        continue
+      fi
       kept=()
       drop=""
       while IFS= read -r tok; do

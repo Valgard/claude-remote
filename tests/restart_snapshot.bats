@@ -75,6 +75,22 @@ mk() {
   [ "$(cut -f4,5 <<<"$output")" = $'skip\tkeine Session-ID' ]
 }
 
+@test "a session started with a restricting flag is not restorable" {
+  # A relaunch drops every flag off the allowlist, and these restrict the session:
+  # restored without them it would run with fewer restrictions than before.
+  mk deny-1 /tmp "--brief --disallowedTools Bash(rm *)" S1
+  mk set-2 /tmp "--settings=/x/deny.json --brief" S2
+  mk mcp-3 /tmp "--strict-mcp-config --mcp-config a.json" S3
+  mk plain-4 /tmp "--brief --model opus" S4
+  run cr_restart_snapshot
+  [ "$status" -eq 0 ]
+  local why="einschränkende Startoptionen (nicht sicher übertragbar)"
+  [ "$(awk -F'\t' '$1 == "deny-1" { print $4 "|" $5 }' <<<"$output")" = "skip|$why" ]
+  [ "$(awk -F'\t' '$1 == "set-2" { print $4 "|" $5 }' <<<"$output")" = "skip|$why" ]
+  [ "$(awk -F'\t' '$1 == "mcp-3" { print $4 "|" $5 }' <<<"$output")" = "skip|$why" ]
+  [ "$(awk -F'\t' '$1 == "plain-4" { print $4 "|" $5 }' <<<"$output")" = "ok|" ]
+}
+
 @test "a start path with space and comma survives" {
   d="$BATS_TEST_TMPDIR/Feist, Raymond E"
   mkdir -p "$d"
