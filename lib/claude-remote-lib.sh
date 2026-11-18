@@ -391,7 +391,9 @@ CR_KEEP_VALUE_FLAGS="--model --fallback-model --effort --permission-mode --agent
 # servers, the permission prompt). None is on the allowlist, so a relaunch would drop
 # it and bring the session back with FEWER restrictions than it ran with; a session
 # started with one is therefore not restorable at all (also in its --flag=value form).
-CR_RESTRICT_FLAGS="--disallowedTools --disallowed-tools --allowedTools --allowed-tools --tools --settings --strict-mcp-config --permission-prompt-tool"
+# --allowedTools is deliberately absent: it only pre-approves tools, so dropping it
+# costs permission prompts, never a restriction; it is dropped and listed like any other.
+CR_RESTRICT_FLAGS="--disallowedTools --disallowed-tools --tools --settings --strict-mcp-config --permission-prompt-tool"
 
 # cr_server_pid: print the running tmux server's pid; return 1 when none runs.
 cr_server_pid() {

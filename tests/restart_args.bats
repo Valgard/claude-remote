@@ -51,7 +51,7 @@ dropped() { cr_rewrite_claude_args "$@" | awk -F'\t' '$1=="-"{print $2}' | paste
 
 @test "every restricting flag is detected, in both spellings and the =value form" {
   local flag
-  for flag in --disallowedTools --disallowed-tools --allowedTools --allowed-tools \
+  for flag in --disallowedTools --disallowed-tools \
     --tools --settings --permission-prompt-tool; do
     cr_drops_restriction --brief "$flag" "Bash(rm *)"
     cr_drops_restriction "$flag=x" --brief
@@ -68,4 +68,13 @@ dropped() { cr_rewrite_claude_args "$@" | awk -F'\t' '$1=="-"{print $2}' | paste
   # Only a whole flag counts, not a word that merely starts like one.
   run cr_drops_restriction --toolsmith --settingsfile
   [ "$status" -eq 1 ]
+}
+
+@test "--allowedTools only pre-approves: dropped and listed, never a restriction" {
+  run cr_drops_restriction --brief --allowedTools "Bash(git *)"
+  [ "$status" -eq 1 ]
+  run cr_drops_restriction --allowed-tools=Read --brief
+  [ "$status" -eq 1 ]
+  [ "$(kept SID --allowedTools Read --brief)" = "--brief --resume SID" ]
+  [ "$(dropped SID --allowedTools Read --brief)" = "--allowedTools Read" ]
 }
