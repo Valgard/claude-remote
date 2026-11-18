@@ -420,11 +420,12 @@ _cr_supervisor_pids() {
   done
 }
 
-# cr_stop_anchor_and_server: end the anchor supervisor(s) first, so nothing re-births
-# the server; only once they are provably gone kill the server. TERM, wait up to 5 s,
-# KILL the survivors, wait up to 2 s; if any is still alive return 1 WITHOUT touching
-# the server (fail safe: nothing is destroyed). Returns 1 also when a server still
-# answers after kill-server. Order is load-bearing.
+# cr_stop_anchor_and_server: end the anchor supervisor(s) first, so the old instance
+# cannot re-birth the server under itself (a fresh instance the agent starts meanwhile
+# may, which is harmless); only once they are provably gone kill the server. TERM, wait
+# up to 5 s, KILL the survivors, wait up to 2 s; if any is still alive return 1 WITHOUT
+# touching the server (fail safe: no session is ended). Returns 1 also when a server
+# still answers after kill-server. Order is load-bearing.
 cr_stop_anchor_and_server() {
   local pids pid
   pids="$(_cr_supervisor_pids)"
@@ -434,8 +435,11 @@ cr_stop_anchor_and_server() {
   # shellcheck disable=SC2086
   _cr_wait_gone 5 $pids && pids=""
   if [ -n "$pids" ]; then
+    # Only the survivors: a pid that exited after TERM may already name another process.
     for pid in $pids; do
-      kill -KILL "$pid" 2>/dev/null
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL "$pid" 2>/dev/null
+      fi
     done
     # shellcheck disable=SC2086
     _cr_wait_gone 2 $pids || return 1
@@ -599,12 +603,13 @@ cr_proc_claude_args() {
 }
 
 # cr_last_cwd <transcript.jsonl>: the cwd of the transcript's most recent record ("" if
-# none). Read exactly like cr_session_title: backwards, grep prefilter, jq -R with
+# none). Read the same way as cr_session_title: backwards, grep prefilter, jq -R with
 # fromjson?. -m3 rather than -m1 because a transcript being appended to right now ends
-# mid-line and that fragment is glued onto the front of the previous line, so the first
-# hit may be unparsable. The next-older record then answers, which is usually the same
-# cwd but not always: a directory change made in exactly that torn last record is
-# missed (accepted, the value only feeds the informational drift marker).
+# mid-line, and the reversers glue that fragment onto the last complete record: the
+# first hit is then unparsable and that complete record is lost with it. The next-older
+# record answers, which is usually the same cwd but not always: a directory change made
+# in the last complete record is missed while a write is in flight (accepted, the value
+# only feeds the informational drift marker).
 cr_last_cwd() {
   local f="$1"
   [ -n "$f" ] && [ -f "$f" ] || return 0
@@ -807,7 +812,9 @@ _cr_session_live() {
 # as restored and listed as already active — unless that holder is the row's OWN old
 # process (its snapshot pid). That one is still exiting after kill-server, or outlives
 # its pty; either way it runs outside any server and is lost once it ends, so the row
-# fails (`alter Prozess läuft noch`) and the retry hint is printed. Before EVERY launch
+# fails (`alter Prozess läuft noch`) and the function returns non-zero (within a
+# restart, cr_restart_execute then repeats the snapshot and the retry command; this
+# function prints no hint itself). Before EVERY launch
 # the anchor session must exist: cr_launch's new-session would otherwise birth a server
 # outside the anchor, so once it is gone that row and all remaining ones fail
 # (`kein Anchor-Server`). A row whose args carry a restricting flag
