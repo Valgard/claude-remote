@@ -204,8 +204,9 @@ nothing_stopped() {
   [ "$status" -eq 0 ]
   [ -e "$BATS_TEST_TMPDIR/mt.n" ]
   [[ "$output" == *"Snapshot-Datei in $CR_RESTART_DIR konnte nicht geschrieben werden – es wurde nichts beendet."* ]]
-  # cr_restart_execute was never called (it would refuse the empty path with this).
-  [[ "$output" != *"fehlt, ist leer"* ]]
+  # Only the snapshot failure refused: cr_restart_execute, whose refusal of the empty
+  # path ends the same way, never ran. Counted, so it holds whatever its wording.
+  [ "$(grep -c 'es wurde nichts beendet' <<<"$output")" -eq 1 ]
   [ "$(menu_reads)" -eq 2 ]
   nothing_stopped "$server"
   [ -z "$(snapshots)" ]
