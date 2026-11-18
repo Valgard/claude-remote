@@ -94,7 +94,10 @@ cr_session_name() {
 # inherits the full ~/.zshrc environment (PATH, secrets, MCP tokens, etc.).
 # The zsh script is `exec command claude "$@"` — `exec` replaces the shell so
 # the pane_pid stays on the claude process (abtop join invariant intact);
-# `command` bypasses the recursive `claude` zsh function. CR_LOGIN_SHELL=0
+# `command` bypasses the recursive `claude` zsh function. Before the exec it
+# fires direnv's hook when ~/.zshrc defined one: zsh only runs that hook before
+# a prompt or after a cd, and `zsh -c` reaches neither, so without the explicit
+# call the start directory's .envrc never loads. CR_LOGIN_SHELL=0
 # keeps the legacy direct exec form (used by the test harness for hermeticity).
 # Renames the session to <name>-<pane_pid>, arms post-exit capture, then either
 # attaches (cr_attach_and_drain, honouring <wait>) or, in no-attach mode, prints
@@ -111,7 +114,7 @@ cr_launch() {
     # SC2016: the single-quoted '$@' is literal on purpose — zsh expands it in
     # the pane, not us. SC2086: intentional word-split on $CR_TMUX.
     # shellcheck disable=SC2086,SC2016
-    $CR_TMUX new-session -d -s "$tmp" -- zsh -lic 'exec command claude "$@"' cr "$@" || return 1
+    $CR_TMUX new-session -d -s "$tmp" -- zsh -lic '(( $+functions[_direnv_hook] )) && _direnv_hook; exec command claude "$@"' cr "$@" || return 1
   else
     # shellcheck disable=SC2086
     $CR_TMUX new-session -d -s "$tmp" -- claude "$@" || return 1
